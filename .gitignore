@@ -1,0 +1,21 @@
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Dependencies and build outputs
+node_modules/
+dist/
+build/
+coverage/
+
+# Runtime/debug output
+*.log
+*.pid
+
+# Python caches used by development utilities
+__pycache__/
+*.py[cod]
+.venv/
