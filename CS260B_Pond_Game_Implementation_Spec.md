@@ -36,8 +36,8 @@ No accounts, grades, or formal human-subjects data collection are required.
 
 | Area | Requirement |
 | --- | --- |
-| Participants | At most 30 players, divided into teams of 4–6. Facilitator and display connections do not consume player seats. |
-| Team body | One creature per team, with one independently controlled limb per participant. |
+| Participants | At most 30 players across teams (up to 6 players per team). Facilitator and display connections do not consume player seats. |
+| Team body | One creature per team, with its number of controllable limbs determined dynamically by how many participants have joined that creature (one limb per joined participant). |
 | Joining | One QR code; players enter a facilitator-assigned team number. Never silently place a player into another team. |
 | Assignment | Each participant keeps the same limb and assigned motion from onboarding to the end. |
 | Input | Easy directional movements, including left-to-right, right-to-left, and diagonal sweeps. |
@@ -50,14 +50,14 @@ No accounts, grades, or formal human-subjects data collection are required.
 | Collection | An item disappears on contact and awards the collecting team a point. |
 | Facilitator | Private Mission Control to operate phases, pause/resume, and reset specific state. |
 | Network modes | Live limb updates and a lower-traffic completed-stroke mode; facilitator chooses a common mode between active rounds. |
-| Visual direction | Playful cartoon pond, inspired by the chunky, expressive visual language of Plants vs. Zombies, with a 2.5D appearance. |
+| Visual direction | Animated American comic / pop-art pond: thick black ink outlines, halftone dot fills, speed-line and starburst accents, chunky outlined lettering, and a saturated blue, pink, yellow, orange, and red palette. This replaces the earlier painted 2.5D direction. |
 | Devices | Modern iPhones and Android phones, subject to an actual browser sensor capability check. |
 | Hosting | One Linux server managed over SSH; participants and classroom computer use normal web browsers. |
 | Haptics | Provide additional haptic feedback where the browser permits it; essential feedback must work without vibration. |
 
 ### 1.3 Initial implementation defaults
 
-- Six teams of five, editable in the lobby; support other 4–6-player configurations within the 30-player cap.
+- Universal minimum and maximum team size (`4–6` by default, editable `1–6` in Mission Control); teams are not pre-created manually, and instead spawn dynamically and size their paddles automatically according to who has joined within the configured `[minTeamSize, maxTeamSize]` range (up to the 30-player session cap).
 - Mostly overhead world view with mild illustrative depth; game geometry remains two-dimensional.
 - Training is untimed by default, with a visible elapsed timer and facilitator-controlled ending.
 - Three-second shared countdown before either scored game.
@@ -87,8 +87,8 @@ The classroom display must not expose private controls or authentication credent
 
 ### 3.1 Normal classroom sequence
 
-1. Facilitator configures team numbers and capacities in the lobby.
-2. Classroom display presents the join QR code and a readable short URL.
+1. Facilitator sets the universal minimum and maximum team size on Mission Control (default 4–6); team count and per-team sizes configure automatically as players join.
+2. Classroom display presents the join QR code and a readable short URL; in the lobby, only teams that have joined are shown, and their cards dynamically resize and relayout as more teams join.
 3. Players enter their assigned team number, receive a limb, enable motion access, and complete calibration.
 4. Facilitator opens training. The display changes to the team-card grid.
 5. Players practice their own movements; recognized strokes animate the corresponding limbs and generate green success feedback.
@@ -131,7 +131,7 @@ Discussion uses a paused activity, not an additional simulation phase. Results a
 
 ## 4. Mission Control
 
-Mission Control should feel related to the pond artwork, but prioritize clear labels and predictable operation.
+Mission Control should share the comic ink, lettering, and palette of the pond artwork (Section 11.1) at a calmer, denser scale, and prioritize clear labels and predictable operation.
 
 ### 4.1 Primary controls
 
@@ -152,7 +152,7 @@ Training is the main preflight phase. A facilitator should be able to tell which
 
 For each team, show:
 
-- Team number, identity color/accessory, target capacity, joined count, and connected count.
+- Team number, identity color/accessory, dynamic limb count (joined count), max seat cap, and connected count.
 - Count of players calibrated and count with at least one accepted practice stroke.
 - Individual limb IDs and stable motion assignments.
 - Per-player sensor status, calibration status, connection status, current input method, last recognition result, and last accepted-stroke age.
@@ -164,12 +164,12 @@ Network diagnostics may show measured round-trip time and delivery gaps. Do not 
 
 ### 4.3 Admission and readiness
 
-- Configure capacities of 4, 5, or 6 before players join.
-- The total configured seat count must not exceed 30.
-- With a minimum of four seats per team, support up to seven teams.
-- Existing players rejoining do not consume a new seat.
-- Lock new admission before scored play; reconnection to an existing seat remains possible.
-- Warn before starting with missing, disconnected, or uncalibrated players. A facilitator can explicitly override the warning; record that override in the session event log.
+- Do not manually configure team count or individual team capacities on Mission Control; instead configure a universal **minimum team size** and **maximum team size** (`1 <= minTeamSize <= maxTeamSize <= 6`, default `4–6`).
+- Teams spawn automatically when the first player joins a valid assigned team number (`1..15`), and each creature's limb count configures automatically to its joined player count (`1..maxTeamSize`).
+- The total joined player count across the session must not exceed 30.
+- Existing players rejoining do not consume a new seat or add an extra limb.
+- Lock new admission before scored play so creature limb topology stays fixed during the round; reconnection to an existing seat remains possible.
+- Warn before starting a scored round if any joined team is below `minTeamSize`, or has disconnected or uncalibrated players. A facilitator can adjust `minTeamSize` or explicitly override the warning; record overrides in the session event log.
 - Never rebalance teams, reassign limbs, or change gestures automatically to satisfy readiness.
 
 ## 5. Classroom display and training grid
@@ -178,10 +178,9 @@ Network diagnostics may show measured round-trip time and delivery gaps. Do not 
 
 Design for a 16:9 classroom screen, especially 1920 × 1080, while remaining usable at laptop resolution. Do not assume participants can read small phone-sized labels from across the room.
 
-- Main content: one bounded card/pool per team, arranged in a regular grid.
-- Default for six teams: three columns by two rows.
-- Reflow for other team counts; up to seven teams can use a three-column grid.
-- Stable team order and stable card positions throughout training.
+- In both the lobby and training views, dynamically show **only** teams that have at least one joined player (`joinedCount >= 1`). Before any team joins in the lobby, center the Join QR hero panel.
+- Dynamically resize and relayout team cards and creature canvases according to how many teams have joined (`1×1` for 1 team, `2×1` for 2, `3×1` for 3, `2×2` for 4, `3×2` for 5–6, `4×2` for 7–8, etc.).
+- Maintain deterministic ascending `teamNumber` order as teams join and throughout training.
 - A compact public header shows phase, timer, and pause/countdown status.
 - Admission QR can be expanded by the facilitator; keep it away from active creature visuals.
 - No administrative reset, calibration, score-editing, or test-input buttons on the real projected view.
@@ -191,7 +190,7 @@ Design for a 16:9 classroom screen, especially 1920 × 1080, while remaining usa
 Each card contains:
 
 1. Large team number plus identity color/accessory.
-2. The team's creature, with exactly the configured number of controllable limbs.
+2. The team's creature, with its controllable limbs dynamically matching the players who have joined that team.
 3. Legible limb IDs matching the IDs on phones.
 4. A compact status indicator for each limb: connected / calibrated / first successful stroke.
 5. A brief textual acknowledgment of the latest event, such as **Limb 3 · stroke recognized**.
@@ -221,9 +220,8 @@ Do not make the whole card green when only one player succeeds. A facilitator mu
 
 The QR code opens the public participant URL and identifies the session. Team assignment is entered by the player from a number the facilitator distributes.
 
-- Accept only a configured, open team with an available seat.
-- Explain invalid, nonexistent, full, or locked teams.
-- Never create a new team from a mistyped number.
+- Accept any valid facilitator-assigned team number (`1..15`) while admission is open and that team has fewer than `maxTeamSize` players (within the 30-player session cap).
+- Explain out-of-range, full (`>= maxTeamSize`), or locked teams clearly.
 - Never silently redirect someone to another team.
 - Allocate a seat atomically so two simultaneous joins cannot take the same limb.
 - Show an unmistakable confirmation: **Team 4 · Limb 2**, matching classroom identity.
@@ -425,25 +423,28 @@ This deliberately keeps both network presentation modes equivalent:
 
 Do not award propulsion once from streamed progress and again from stroke completion. Network frame count, sample rate, phone brand, gesture force, and haptic availability must not increase propulsion.
 
-### 10.2 Limb layout and team-size normalization
+### 10.2 Dynamic limb layout and team-size normalization
 
-Suggested layouts:
+Each creature's controllable limb count `N` equals the number of players who have joined that team (`1..6`, starting at `0` in the lobby before anyone joins):
 
-| Team size | Layout |
+| Joined players (`N`) | Dynamic symmetric layout |
 | --- | --- |
+| 1 | One center-rear paddle/tail (straight propulsion) |
+| 2 | One left-side and one right-side paddle |
+| 3 | One left-side and one right-side paddle, plus a center-rear paddle/tail |
 | 4 | Two left-side and two right-side paddles |
 | 5 | Two left-side and two right-side paddles, plus a center-rear paddle/tail |
 | 6 | Three left-side and three right-side paddles |
 
-Assign stable limb IDs and maintain them across all views and phases. Do not change creature topology after assigning players without an explicit session/roster reconfiguration.
+Assign stable limb IDs and motion assignments on join (`Limb 1 .. Limb N`) and maintain them across all views and phases. Later teammates joining a creature add new limbs without altering any earlier teammate's limb ID or assigned gesture. Lock admission when a scored round starts so `N` remains fixed during the round.
 
-Let `N` be the configured number of limbs for the current round:
+Let `N` be the number of joined limbs on that creature (`team.limbCount`):
 
 - Each accepted stroke contributes forward impulse proportional to `1/N`.
 - For turning, normalize the total capacity of the left and right banks equally. Center-rear limbs add forward propulsion without a turning bias.
-- A complete stroke cycle from every assigned limb should produce comparable total forward impulse for a 4-, 5-, or 6-player team.
-- Equal left-bank and right-bank participation should cancel turning, including for the five-limb layout.
-- Disconnection does not reduce `N` or inflate the power of remaining players.
+- A complete stroke cycle from every joined limb produces comparable total forward impulse regardless of whether a creature has 1, 2, 3, 4, 5, or 6 players.
+- Equal left-bank and right-bank participation cancels turning across all symmetric layouts (including odd-sized layouts with a center-rear tail).
+- Disconnection does not remove that player's limb, reduce `N`, or inflate the power of remaining players.
 
 This prevents a built-in raw-power advantage for larger teams; it does not guarantee equal human coordination difficulty.
 
@@ -488,18 +489,21 @@ Use a seeded layout generator for repeatable tests. Exact seed selection is a fa
 
 ### 11.1 Visual target
 
-Create an original, playful cartoon pond world with chunky silhouettes, expressive faces, painted shading, and a 2.5D feel. The reference is the broad visual character of Plants vs. Zombies: approachable shapes, exaggerated personalities, and readable gameplay.
+Create an original, animated pond world drawn like an American comic / pop-art page. The reference is the broad visual character of a printed action comic: thick black ink outlines, halftone dot fills, radial speed lines, starburst and speech-bubble callouts, chunky outlined lettering with short onomatopoeia ("SPLASH!", "POW!"), and saturated cyan-blue, hot pink, yellow, orange, and red. The interface should read as an engaging game, not as a dashboard.
 
-The proposed creature is a round lily-bulb/pond creature with oversized leaf paddles. This character design is an implementation/art default; the many-limbed team body and cartoon 2.5D direction are confirmed.
+The proposed creature is a round lily-bulb/pond creature with oversized leaf paddles. This character design is an implementation/art default; the many-limbed team body and the comic direction are confirmed. The comic direction replaces the earlier painted 2.5D direction.
 
-- Mostly overhead camera with a slight illustrative angle.
-- Calm turquoise water; decorative reeds, lily pads, and flowers mainly at arena edges.
-- Raised/shaded bodies, soft water shadows, and readable wakes.
+- Overhead camera. Flat cel shading with one hard shadow tone and halftone dots instead of painted gradients.
+- Bright comic-blue water with halftone texture and sparse wave marks; decoration stays at arena edges.
+- Inked bodies with hard offset shadows, squash-and-stretch on accepted strokes, and readable speed lines.
 - Distinct team body colors plus numbers/accessories so identity does not rely on color alone.
-- Bright golden bugs or glowing seed pods as collectibles.
-- Friendly rounded controls, illustrated wood/sign details, and high-contrast readable text.
+- Bright golden bugs or seed pods as collectibles; a collection pops a small starburst with a "+1".
+- Panels with ink borders and hard drop shadows, caption boxes, speech bubbles, arcade-style buttons, and high-contrast readable text (body text at least 4.5:1).
+- One comic system, three intensities: the classroom display is the loudest, the phone controller is bold but dominated by the hold pad and status, and Mission Control keeps the same ink and lettering at a denser, calmer scale.
 
-Keep the simulation plane and collection footprints clear. Decorative depth must not hide a limb or make object contact look spatially incorrect.
+Motion is part of the direction: panels and callouts pop in, the countdown slams, and an accepted stroke gets a localized reaction on its own limb (Sections 5.3 and 8). Comic effects never replace state. The success cue stays green and limb-local, callouts must not cover labels or controls, and reduced-motion preferences (Section 11.3) remove the animation while keeping every static indicator.
+
+Keep the simulation plane and collection footprints clear. Decoration must not hide a limb or make object contact look spatially incorrect.
 
 ### 11.2 Modular creature assets
 

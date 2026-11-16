@@ -1,0 +1,22 @@
+# Example systemd user/system unit for CS260B Shared-Body Pond Game
+# Replace <LINUX_USER> and <REPO_ABSOLUTE_PATH> with actual values on your server.
+# Never commit .env or actual secrets into Git.
+
+[Unit]
+Description=CS260B Shared-Body Pond Game Server
+After=network.target
+
+[Service]
+Type=simple
+User=<LINUX_USER>
+WorkingDirectory=<REPO_ABSOLUTE_PATH>
+Environment=NODE_ENV=production
+EnvironmentFile=<REPO_ABSOLUTE_PATH>/.env
+ExecStart=/usr/bin/env node dist/server/server/index.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
