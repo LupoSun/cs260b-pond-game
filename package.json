@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CS260B classroom shared-body pond game with local phone motion recognition and authoritative Socket.IO server",
+  "description": "Comic-style multiplayer pond game: teams share one swimming creature, each phone paddles one limb",
   "scripts": {
     "dev": "tsx src/server/index.ts",
     "dev:client": "vite",
