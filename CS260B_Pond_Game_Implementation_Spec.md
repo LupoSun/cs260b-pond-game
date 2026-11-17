@@ -144,7 +144,8 @@ Mission Control should share the comic ink, lettering, and palette of the pond a
 7. Round duration controls while staged or paused; do not retroactively change an active round without an explicit host action.
 8. **Open classroom display** in another tab/window.
 9. Join QR code, session URL, and admission lock.
-10. Access to the scoped reset controls in Section 9.
+10. **Show guide / Hide guide** toggle for the how-to-play guide on the classroom display (Section 5.1).
+11. Access to the scoped reset controls in Section 9.
 
 Training is the main preflight phase. A facilitator should be able to tell which player needs help without watching every phone.
 
@@ -183,6 +184,7 @@ Design for a 16:9 classroom screen, especially 1920 × 1080, while remaining usa
 - Maintain deterministic ascending `teamNumber` order as teams join and throughout training.
 - A compact public header shows phase, timer, and pause/countdown status.
 - Admission QR can be expanded by the facilitator; keep it away from active creature visuals.
+- A facilitator-toggled how-to-play guide can cover the display, typically at the beginning. It shows the join QR and URL, the nickname and team-number step, the motion-permission reminder (Safari on iPhone, Chrome on Android), the six sweeps with the hold–sweep–release rule, and the shared-creature idea. It is presentation only, is off by default, cannot be turned on during a countdown or running phase, hides automatically when a phase starts or resumes, and is cleared by **Clear entire session**. The display itself has no control to show or hide it.
 - No administrative reset, calibration, score-editing, or test-input buttons on the real projected view.
 
 ### 5.2 Each training card
@@ -218,17 +220,19 @@ Do not make the whole card green when only one player succeeds. A facilitator mu
 
 ### 6.1 Join behavior
 
-The QR code opens the public participant URL and identifies the session. Team assignment is entered by the player from a number the facilitator distributes.
+The QR code opens the public participant URL and identifies the session. The player enters a name or nickname of their choosing and the team number the facilitator distributes.
 
 - Accept any valid facilitator-assigned team number (`1..15`) while admission is open and that team has fewer than `maxTeamSize` players (within the 30-player session cap).
 - Explain out-of-range, full (`>= maxTeamSize`), or locked teams clearly.
 - Never silently redirect someone to another team.
 - Allocate a seat atomically so two simultaneous joins cannot take the same limb.
-- Show an unmistakable confirmation: **Team 4 · Limb 2**, matching classroom identity.
+- Require a short display name or nickname (engineering default: at most 16 characters after trimming; control and invisible characters removed). Names need not be unique; the limb number still disambiguates.
+- Show the nickname with the limb on the classroom display and Mission Control so teammates and the facilitator can tell who controls which limb.
+- Show an unmistakable confirmation: **Sam · Team 4 · Limb 2**, matching classroom identity.
 - Give a session-scoped persistent player identity and resume token, independent of the transient socket ID.
 - A page refresh/reconnect should restore that identity and its assignments. A second tab must not create a duplicate active controller for the same seat.
 
-No personal name, university account, or email is necessary.
+The nickname is self-chosen, kept only in the in-memory session, preserved across reconnects and scoped resets, and discarded by **Clear entire session**. It does not have to be the participant's real name. No university account or email is necessary.
 
 ### 6.2 Onboarding sequence
 

@@ -7,6 +7,7 @@ import { generateRealisticSweepSamples, generateStationarySamples } from '../../
 import { TiltFallbackRecognizer } from '../../sensor/tiltRecognizer.js';
 import type { ExtendedCalibrationData, RecognizedStrokeCandidate } from '../../sensor/types.js';
 import { GAME_DEFAULTS, GESTURE_SPECS, RECOGNIZER_DEFAULTS } from '../../shared/constants.js';
+import { PLAYER_NAME_MAX_LENGTH, sanitizePlayerName } from '../../shared/playerName.js';
 import type {
   AckResponse,
   CalibrationSummary,
@@ -74,6 +75,7 @@ export const PlayView: React.FC = () => {
 
   // Join form
   const [teamInput, setTeamInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
 
@@ -527,6 +529,11 @@ export const PlayView: React.FC = () => {
       setJoinError('Enter the team number given by your facilitator (e.g. 1 to 6).');
       return;
     }
+    const playerName = sanitizePlayerName(nameInput);
+    if (!playerName) {
+      setJoinError('Enter a name or nickname so your team can spot you.');
+      return;
+    }
     const sock = socketRef.current;
     if (!sock || !sock.connected) {
       setJoinError('Waiting for live server connection...');
@@ -534,7 +541,7 @@ export const PlayView: React.FC = () => {
     }
 
     setJoining(true);
-    sock.emit('player.join', { teamNumber: num }, (res: AckResponse<PlayerPrivateSeat>) => {
+    sock.emit('player.join', { teamNumber: num, playerName }, (res: AckResponse<PlayerPrivateSeat>) => {
       setJoining(false);
       if (!res?.ok || !res.data) {
         setJoinError(res?.message || 'Could not join that team.');
@@ -1019,11 +1026,30 @@ export const PlayView: React.FC = () => {
         <section className="onboard-panel">
           <h1>Join Your Team!</h1>
           <p>
-            Enter the team number given by your facilitator. You will control one paddle throughout
+            Enter your name or nickname and the team number given by your facilitator. You will control one paddle throughout
             training and the race.
           </p>
 
           <form onSubmit={handleJoinSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <label htmlFor="player-name-input" className="field-label">
+              Your Name or Nickname
+            </label>
+            <input
+              id="player-name-input"
+              className="field-input"
+              type="text"
+              autoComplete="nickname"
+              autoCapitalize="words"
+              enterKeyHint="next"
+              maxLength={PLAYER_NAME_MAX_LENGTH}
+              placeholder="e.g. Sam"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              required
+            />
+            <div style={{ fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
+              Shown on the classroom screen next to your limb.
+            </div>
             <label htmlFor="team-number-input" className="field-label">
               Assigned Team Number
             </label>
@@ -1080,7 +1106,7 @@ export const PlayView: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span className="team-swatch-dot" style={{ backgroundColor: seat.colorHex }} />
             <span className="play-topbar-title">
-              Team {seat.teamNumber} · {seat.limbLabel}
+              {seat.playerName} · Team {seat.teamNumber} · {seat.limbLabel}
             </span>
           </div>
           <span className={`pill ${connected ? 'pill-running' : 'pill-danger'}`}>
@@ -1092,7 +1118,7 @@ export const PlayView: React.FC = () => {
           <section className="onboard-panel">
             <SetupStepTrack current={1} />
             <h1>
-              You're In! Team {seat.teamNumber} · {seat.limbLabel}
+              You're In, {seat.playerName}! Team {seat.teamNumber} · {seat.limbLabel}
             </h1>
             <p>
               Your assigned movement is <strong>{GESTURE_SPECS[seat.assignment.gestureId].instruction}</strong>.
@@ -1320,7 +1346,7 @@ export const PlayView: React.FC = () => {
           <span className="team-swatch-dot" style={{ backgroundColor: seat.colorHex }} />
           <div>
             <div className="play-topbar-title">
-              Team {seat.teamNumber} · {seat.limbLabel}
+              {seat.playerName} · Team {seat.teamNumber} · {seat.limbLabel}
             </div>
             <div style={{ fontSize: '0.74rem', color: 'var(--ink-secondary)' }}>
               {inputMethod === 'physical_sweep'

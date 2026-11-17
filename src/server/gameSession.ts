@@ -38,6 +38,7 @@ import type {
   TeamPublicState,
   TeamSimState,
 } from '../shared/types.js';
+import { PLAYER_NAME_MAX_LENGTH, sanitizePlayerName } from '../shared/playerName.js';
 import { createSeededRng } from './prng.js';
 
 interface ActiveAttemptRecord {
@@ -50,6 +51,8 @@ interface ActiveAttemptRecord {
 
 interface PlayerRecord {
   playerId: string;
+  /** Participant-chosen nickname; fixed for the session like team and limb */
+  playerName: string;
   resumeToken: string;
   teamNumber: number;
   limbIndex: number;
@@ -114,6 +117,7 @@ export class ClassroomGameSession {
   private networkMode: NetworkPresentationMode = 'continuous';
   private networkModeVersion = 1;
   private admissionLocked = false;
+  private guideVisible = false;
   private minTeamSize: number = GAME_DEFAULTS.defaultMinTeamSize;
   private maxTeamSize: number = GAME_DEFAULTS.defaultMaxTeamSize;
 
@@ -292,6 +296,7 @@ export class ClassroomGameSession {
   joinPlayer(
     socketId: string,
     requestedTeamNumber: number,
+    rawPlayerName: unknown,
   ): AckResponse<PlayerPrivateSeat> {
     if (!Number.isInteger(requestedTeamNumber)) {
       return this.failAck('INVALID_TEAM_NUMBER', 'Enter a whole team number assigned by your facilitator.');
@@ -301,6 +306,14 @@ export class ClassroomGameSession {
       return this.failAck(
         'TEAM_NUMBER_OUT_OF_RANGE',
         `Enter a valid team number between 1 and ${MAX_TEAM_NUMBER}.`,
+      );
+    }
+
+    const playerName = sanitizePlayerName(rawPlayerName);
+    if (!playerName) {
+      return this.failAck(
+        'INVALID_PLAYER_NAME',
+        `Enter a name or nickname (up to ${PLAYER_NAME_MAX_LENGTH} characters) so your team can spot you.`,
       );
     }
 
@@ -364,6 +377,7 @@ export class ClassroomGameSession {
 
     const record: PlayerRecord = {
       playerId,
+      playerName,
       resumeToken,
       teamNumber: requestedTeamNumber,
       limbIndex: freeLimbIndex,
@@ -403,13 +417,13 @@ export class ClassroomGameSession {
 
     this.logEvent(
       'info',
-      `Player joined Team ${requestedTeamNumber} · ${limbLabel} (${gestureSpec.shortLabel}); creature now has ${team.layout.length} limb(s).`,
+      `${playerName} joined Team ${requestedTeamNumber} · ${limbLabel} (${gestureSpec.shortLabel}); creature now has ${team.layout.length} limb(s).`,
     );
 
     return {
       ok: true,
       code: 'JOINED',
-      message: `Assigned to Team ${requestedTeamNumber} · ${limbLabel}.`,
+      message: `${playerName} assigned to Team ${requestedTeamNumber} · ${limbLabel}.`,
       sessionId: this.sessionId,
       stateRevision: this.stateRevision,
       inputEpoch: this.inputEpoch,
@@ -453,7 +467,7 @@ export class ClassroomGameSession {
     this.playersBySocketId.set(socketId, playerId);
     this.bumpRevision();
 
-    this.logEvent('info', `Player reconnected to Team ${player.teamNumber} · ${player.limbLabel} (gen ${player.connectionGeneration}).`);
+    this.logEvent('info', `${player.playerName} reconnected to Team ${player.teamNumber} · ${player.limbLabel} (gen ${player.connectionGeneration}).`);
 
     return {
       ok: true,
@@ -478,7 +492,7 @@ export class ClassroomGameSession {
     player.connected = false;
     player.activeAttempt = null;
     this.bumpRevision();
-    this.logEvent('info', `Team ${player.teamNumber} · ${player.limbLabel} disconnected (seat preserved).`);
+    this.logEvent('info', `${player.playerName} (Team ${player.teamNumber} · ${player.limbLabel}) disconnected (seat preserved).`);
   }
 
   updateSensorStatus(
@@ -768,7 +782,7 @@ export class ClassroomGameSession {
     }
 
     team.latestAcknowledgment = {
-      text: `${player.limbLabel} · stroke recognized`,
+      text: `${player.playerName} · ${player.limbLabel} · stroke recognized`,
       limbIndex: player.limbIndex,
       strokeId: payload.strokeId,
       atServerMs: nowMs,
@@ -1201,6 +1215,23 @@ export class ClassroomGameSession {
         );
       }
 
+      case 'set_guide_visible': {
+        const visible = Boolean(cmd.visible);
+        if (visible && (this.runStatus === 'running' || this.runStatus === 'countdown')) {
+          return this.failAck(
+            'MUST_PAUSE_OR_STAGE_FIRST',
+            'Pause or end the running phase before covering the classroom display with the guide.',
+          );
+        }
+        this.guideVisible = visible;
+        this.bumpRevision();
+        this.logEvent('info', `How-to-play guide ${visible ? 'shown on' : 'hidden from'} the classroom display.`);
+        return this.okAck(
+          'GUIDE_UPDATED',
+          visible ? 'Guide is showing on the classroom display.' : 'Guide hidden from the classroom display.',
+        );
+      }
+
       case 'set_network_mode': {
         if (this.runStatus !== 'ready' && this.runStatus !== 'paused' && this.runStatus !== 'finished') {
           return this.failAck(
@@ -1298,6 +1329,9 @@ export class ClassroomGameSession {
           }
         }
 
+        // The guide must never cover live training feedback or a race
+        this.guideVisible = false;
+
         if (isScored) {
           this.admissionLocked = true;
           this.runStatus = 'countdown';
@@ -1342,6 +1376,7 @@ export class ClassroomGameSession {
         }
         this.runStatus = 'running';
         this.pausedForDiscussion = false;
+        this.guideVisible = false;
         this.bumpInputEpoch();
         this.bumpRevision();
         this.logEvent('info', `Resumed ${this.phase} (inputEpoch ${this.inputEpoch}).`);
@@ -1447,6 +1482,7 @@ export class ClassroomGameSession {
         this.scoringEnabled = false;
         this.pausedForDiscussion = false;
         this.admissionLocked = false;
+        this.guideVisible = false;
         this.activeElapsedMs = 0;
         this.countdownRemainingMs = 0;
         this.items = [];
@@ -1463,6 +1499,9 @@ export class ClassroomGameSession {
         return this.okAck('SESSION_CLEARED', 'Entire session cleared; all seats reopened.');
       }
     }
+
+    // Payloads arrive over the wire, so an unrecognized type must be rejected rather than crash the server
+    return this.failAck('UNKNOWN_COMMAND', 'Unknown facilitator command.');
   }
 
   private clearTeamPracticeState(team: TeamRecord): void {
@@ -1628,6 +1667,7 @@ export class ClassroomGameSession {
           limbLabel: slot.limbLabel,
           bank: slot.bank,
           assignedPlayerId: p ? p.playerId : null,
+          playerName: p ? p.playerName : null,
           gestureId: p ? p.assignment.gestureId : null,
           connected: p ? p.connected : false,
           sensorStatus: p ? p.sensorStatus : ('unknown' as SensorStatus),
@@ -1702,6 +1742,7 @@ export class ClassroomGameSession {
       networkMode: this.networkMode,
       networkModeVersion: this.networkModeVersion,
       admissionLocked: this.admissionLocked,
+      guideVisible: this.guideVisible,
       minTeamSize: this.minTeamSize,
       maxTeamSize: this.maxTeamSize,
       maxTeamNumber: MAX_TEAM_NUMBER,
@@ -1719,6 +1760,7 @@ export class ClassroomGameSession {
       .sort((a, b) => a.teamNumber - b.teamNumber || a.limbIndex - b.limbIndex)
       .map((p) => ({
         playerId: p.playerId,
+        playerName: p.playerName,
         teamNumber: p.teamNumber,
         limbIndex: p.limbIndex,
         limbLabel: p.limbLabel,
@@ -1839,6 +1881,7 @@ export class ClassroomGameSession {
     const team = this.teams.get(p.teamNumber)!;
     return {
       playerId: p.playerId,
+      playerName: p.playerName,
       resumeToken: p.resumeToken,
       sessionId: this.sessionId,
       teamNumber: p.teamNumber,

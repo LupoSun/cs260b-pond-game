@@ -89,6 +89,8 @@ export interface LimbLiveState {
   limbLabel: string;
   bank: LimbBank;
   assignedPlayerId: string | null;
+  /** Participant-chosen nickname; null for an unassigned limb */
+  playerName: string | null;
   gestureId: GestureId | null;
   connected: boolean;
   sensorStatus: SensorStatus;
@@ -189,6 +191,8 @@ export interface SessionPublicSnapshot {
   networkMode: NetworkPresentationMode;
   networkModeVersion: number;
   admissionLocked: boolean;
+  /** Facilitator-toggled how-to-play guide on the classroom display (presentation only) */
+  guideVisible: boolean;
   minTeamSize: number;
   maxTeamSize: number;
   maxTeamNumber: number;
@@ -201,6 +205,7 @@ export interface SessionPublicSnapshot {
 
 export interface HostPlayerDiagnostic {
   playerId: string;
+  playerName: string;
   teamNumber: number;
   limbIndex: number;
   limbLabel: string;
@@ -237,6 +242,7 @@ export interface HostPrivateSnapshot {
 
 export interface PlayerPrivateSeat {
   playerId: string;
+  playerName: string;
   resumeToken: string;
   sessionId: string;
   teamNumber: number;
@@ -323,6 +329,11 @@ export type HostCommandPayload =
       commandId: string;
       type: 'set_admission_lock';
       locked: boolean;
+    }
+  | {
+      commandId: string;
+      type: 'set_guide_visible';
+      visible: boolean;
     }
   | {
       commandId: string;

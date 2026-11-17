@@ -545,6 +545,39 @@ export const ControlView: React.FC = () => {
 
             <div style={{ borderTop: '2px dashed var(--border-strong)', paddingTop: '0.7rem' }}>
               <div style={{ fontSize: '0.84rem', fontWeight: 650, marginBottom: '0.35rem' }}>
+                How-to-Play Guide on Classroom Display
+              </div>
+              <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
+                Covers the classroom display with joining steps, the motion-permission reminder, the
+                six sweeps, and the game idea. It hides itself when a phase starts or resumes.
+              </p>
+              <div className="btn-row" style={{ alignItems: 'center' }}>
+                <button
+                  type="button"
+                  aria-pressed={session.guideVisible}
+                  className={session.guideVisible ? 'btn-primary btn-xs' : 'btn-secondary btn-xs'}
+                  disabled={
+                    !session.guideVisible &&
+                    (session.runStatus === 'running' || session.runStatus === 'countdown')
+                  }
+                  onClick={() =>
+                    sendCommand((commandId) => ({
+                      commandId,
+                      type: 'set_guide_visible',
+                      visible: !session.guideVisible,
+                    }))
+                  }
+                >
+                  {session.guideVisible ? 'Hide Guide' : 'Show Guide'}
+                </button>
+                <span className={`pill ${session.guideVisible ? 'pill-running' : ''}`}>
+                  {session.guideVisible ? 'Guide showing' : 'Guide hidden'}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ borderTop: '2px dashed var(--border-strong)', paddingTop: '0.7rem' }}>
+              <div style={{ fontSize: '0.84rem', fontWeight: 650, marginBottom: '0.35rem' }}>
                 Universal Team Size Range (Auto-configures per joined team)
               </div>
               <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
@@ -822,7 +855,7 @@ export const ControlView: React.FC = () => {
                         {teamPlayers.map((p) => (
                           <tr key={p.playerId}>
                             <td>
-                              <strong>{p.limbLabel}</strong>
+                              <strong>{p.playerName}</strong> · {p.limbLabel}
                               {p.held ? ' (Held)' : ''}
                             </td>
                             <td>{p.gestureInstruction}</td>

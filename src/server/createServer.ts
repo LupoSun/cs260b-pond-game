@@ -147,8 +147,8 @@ export async function createPondServer(config: ServerConfig): Promise<RunningPon
     // Participant events
     socket.on(
       'player.join',
-      (payload: { teamNumber: number }, ack?: (resp: AckResponse<unknown>) => void) => {
-        const res = session.joinPlayer(socket.id, Number(payload?.teamNumber));
+      (payload: { teamNumber: number; playerName: string }, ack?: (resp: AckResponse<unknown>) => void) => {
+        const res = session.joinPlayer(socket.id, Number(payload?.teamNumber), payload?.playerName);
         ack?.(res);
         broadcastImmediate();
       },

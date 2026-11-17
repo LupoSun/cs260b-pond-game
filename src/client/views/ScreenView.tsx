@@ -5,8 +5,10 @@ import type {
   StrokeAcceptedBroadcast,
   TeamPublicState,
 } from '../../shared/types.js';
+import { GESTURE_ASSIGNMENT_ORDER } from '../../shared/constants.js';
 import { ComicBurst } from '../components/ComicBurst.js';
 import { CreatureCardCanvas } from '../components/CreatureCardCanvas.js';
+import { GestureDemoBadge } from '../components/GestureDemoBadge.js';
 import { FeedbackController } from '../feedback.js';
 import {
   drawFreewaterScene,
@@ -279,7 +281,7 @@ export const ScreenView: React.FC = () => {
             {timerDisplay}
           </div>
 
-          {snapshot.phase !== 'lobby' && !snapshot.admissionLocked && (
+          {snapshot.phase !== 'lobby' && !snapshot.admissionLocked && !snapshot.guideVisible && (
             <button
               type="button"
               className="btn-subtle btn-xs"
@@ -306,7 +308,7 @@ export const ScreenView: React.FC = () => {
       </header>
 
       {/* Expandable Corner QR Banner when outside Lobby (kept clear of active creatures) */}
-      {showQrDrawer && snapshot.phase !== 'lobby' && (
+      {showQrDrawer && snapshot.phase !== 'lobby' && !snapshot.guideVisible && (
         <aside className="qr-drawer">
           <div className="qr-image-frame">
             <img src={qrSrc} alt="Scan to join pond game" />
@@ -408,7 +410,7 @@ export const ScreenView: React.FC = () => {
                           key={l.limbIndex}
                           className={`limb-chip ${l.calibrated ? 'is-calibrated' : ''}`}
                         >
-                          L{l.limbIndex + 1}{' '}
+                          <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
                           {l.calibrated ? 'Cal ✓' : l.connected ? 'Joined' : 'Offline'}
                         </div>
                       ))}
@@ -493,7 +495,7 @@ export const ScreenView: React.FC = () => {
                                 : ''
                           }`}
                         >
-                          L{l.limbIndex + 1}{' '}
+                          <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
                           {l.hasSucceededStroke
                             ? '✓'
                             : l.calibrated
@@ -672,6 +674,76 @@ export const ScreenView: React.FC = () => {
               </div>
             </div>
           )}
+        </section>
+      )}
+
+      {/* 4. HOW-TO-PLAY GUIDE: facilitator-toggled from Mission Control; read-only here */}
+      {snapshot.guideVisible && (
+        <section className="guide-stage" aria-label="How to play">
+          <div className="guide-grid">
+            <article className="guide-panel guide-join">
+              <h2 className="guide-heading">
+                <span className="guide-num">1</span> Scan &amp; Join
+              </h2>
+              <div className="qr-image-frame">
+                <img src={qrSrc} alt={`Join QR code for ${playUrl}`} />
+              </div>
+              <div className="join-url-pill">{playUrl}</div>
+              {snapshot.admissionLocked ? (
+                <span className="pill pill-paused">Admission Locked (Rejoining Open)</span>
+              ) : (
+                <p>
+                  Type a <strong>nickname</strong> and the <strong>team number</strong> your
+                  facilitator gave you.
+                </p>
+              )}
+            </article>
+
+            <article className="guide-panel guide-motion">
+              <h2 className="guide-heading">
+                <span className="guide-num">2</span> Allow Motion
+              </h2>
+              <ul>
+                <li>
+                  Tap <strong>Enable Motion</strong>. If your phone asks, choose{' '}
+                  <strong>Allow</strong>.
+                </li>
+                <li>
+                  iPhone: open the page in <strong>Safari</strong>. Android: use{' '}
+                  <strong>Chrome</strong>.
+                </li>
+                <li>Hold the phone upright with the screen facing you, then keep still to calibrate.</li>
+              </ul>
+            </article>
+
+            <article className="guide-panel guide-game">
+              <h2 className="guide-heading">The Game</h2>
+              <ul>
+                <li>
+                  Your team shares <strong>one creature</strong>. Each player is{' '}
+                  <strong>one limb</strong>.
+                </li>
+                <li>You keep the same team, limb, and sweep the whole time.</li>
+                <li>Practice first, then paddle together to race across the pond!</li>
+              </ul>
+            </article>
+
+            <article className="guide-panel guide-sweeps">
+              <h2 className="guide-heading">
+                <span className="guide-num">3</span> Learn Your Sweep
+              </h2>
+              <p>
+                Your phone shows which one is yours. <strong>Hold</strong> the button,{' '}
+                <strong>sweep</strong> the phone a short way, <strong>release</strong>, then bring
+                it back. Small moves are enough, so stay seated.
+              </p>
+              <div className="guide-sweep-grid">
+                {GESTURE_ASSIGNMENT_ORDER.map((gestureId) => (
+                  <GestureDemoBadge key={gestureId} gestureId={gestureId} animate compact />
+                ))}
+              </div>
+            </article>
+          </div>
         </section>
       )}
     </main>

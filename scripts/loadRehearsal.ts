@@ -96,7 +96,7 @@ async function runLoadScenario(opts: {
         const ps = createClient(baseUrl, { transports: ['websocket'] });
         await new Promise<void>((resolve) => ps.once('connect', () => resolve()));
         const joinRes = await new Promise<AckResponse<PlayerPrivateSeat>>((resolve) => {
-          ps.emit('player.join', { teamNumber: teamNum }, resolve);
+          ps.emit('player.join', { teamNumber: teamNum, playerName: `Bot ${teamNum}-${slot + 1}` }, resolve);
         });
         if (!joinRes.ok || !joinRes.data) {
           throw new Error(`Failed joining player ${teamNum}-${slot}: ${joinRes.message}`);

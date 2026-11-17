@@ -61,7 +61,7 @@ describe('Section 14.2 & 14.3 — Live Socket.IO Trust Boundaries & Role Isolati
 
       // Join 1 player and inspect raw public snapshot JSON to ensure resumeToken & hostPasscode never leak
       const joinAck = await new Promise<AckResponse<{ resumeToken: string }>>((resolve) => {
-        playerClient.emit('player.join', { teamNumber: 1 }, resolve);
+        playerClient.emit('player.join', { teamNumber: 1, playerName: 'Tester' }, resolve);
       });
       expect(joinAck.ok).toBe(true);
       const secretResumeToken = joinAck.data!.resumeToken;

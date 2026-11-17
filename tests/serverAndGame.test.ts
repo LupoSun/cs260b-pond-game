@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ClassroomGameSession } from '../src/server/gameSession.js';
-import type { CalibrationSummary, PlayerPrivateSeat } from '../src/shared/types.js';
+import type { CalibrationSummary, HostCommandPayload, PlayerPrivateSeat } from '../src/shared/types.js';
 
 function makeValidCal(version = 1): CalibrationSummary {
   return {
@@ -20,7 +20,7 @@ function joinAndCalibrate(
   socketId: string,
   teamNumber: number,
 ): PlayerPrivateSeat {
-  const joined = session.joinPlayer(socketId, teamNumber);
+  const joined = session.joinPlayer(socketId, teamNumber, 'Tester');
   if (!joined.ok || !joined.data) {
     throw new Error(`Join failed: ${joined.code} ${joined.message}`);
   }
@@ -40,6 +40,49 @@ function joinAndCalibrate(
 }
 
 describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped Resets', () => {
+  it('requires a nickname at join, sanitizes it, and keeps it across reconnect', () => {
+    const session = new ClassroomGameSession();
+    expect(session.joinPlayer('sock_noname', 1, undefined).code).toBe('INVALID_PLAYER_NAME');
+    expect(session.joinPlayer('sock_blank', 1, '  \u200b ').code).toBe('INVALID_PLAYER_NAME');
+    expect(session.getPublicSnapshot().teams.length).toBe(0);
+
+    const joined = session.joinPlayer('sock_named', 1, '  Sam \n the   Extremely Long Frog  ');
+    expect(joined.ok).toBe(true);
+    expect(joined.data!.playerName).toBe('Sam the Extremel');
+    expect(session.getPublicSnapshot().teams[0].limbs[0].playerName).toBe('Sam the Extremel');
+    expect(session.getHostSnapshot().players[0].playerName).toBe('Sam the Extremel');
+
+    session.handleSocketDisconnect('sock_named');
+    const resumed = session.resumePlayer('sock_named_2', joined.data!.resumeToken);
+    expect(resumed.data!.playerName).toBe('Sam the Extremel');
+  });
+
+  it('toggles the classroom guide by host command and hides it when a phase starts', () => {
+    const session = new ClassroomGameSession();
+    expect(session.getPublicSnapshot().guideVisible).toBe(false);
+
+    const show = (visible: boolean, id: string) =>
+      session.executeHostCommand({ commandId: id, type: 'set_guide_visible', visible });
+
+    expect(show(true, 'g1').ok).toBe(true);
+    expect(session.getPublicSnapshot().guideVisible).toBe(true);
+
+    session.executeHostCommand({ commandId: 'g2', type: 'load_phase', phase: 'training' });
+    expect(session.getPublicSnapshot().guideVisible).toBe(true);
+    session.executeHostCommand({ commandId: 'g3', type: 'start_phase' });
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.getPublicSnapshot().guideVisible).toBe(false);
+
+    const bogus = { commandId: 'g_bogus', type: 'not_a_command' } as unknown as HostCommandPayload;
+    expect(session.executeHostCommand(bogus).code).toBe('UNKNOWN_COMMAND');
+
+    expect(show(true, 'g4').code).toBe('MUST_PAUSE_OR_STAGE_FIRST');
+    session.executeHostCommand({ commandId: 'g5', type: 'pause_phase' });
+    expect(show(true, 'g6').ok).toBe(true);
+    session.executeHostCommand({ commandId: 'g7', type: 'resume_phase' });
+    expect(session.getPublicSnapshot().guideVisible).toBe(false);
+  });
+
   it('starts with 0 lobby teams, dynamically spawns joined teams in sorted order, enforces universal min/max bounds and 30-player cap', () => {
     let clockMs = 1000;
     const session = new ClassroomGameSession({
@@ -54,24 +97,24 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     expect(session.getPublicSnapshot().maxTeamSize).toBe(6);
 
     // Out-of-range team numbers rejected cleanly
-    expect(session.joinPlayer('sock_bad_0', 0).code).toBe('TEAM_NUMBER_OUT_OF_RANGE');
-    expect(session.joinPlayer('sock_bad_99', 99).code).toBe('TEAM_NUMBER_OUT_OF_RANGE');
+    expect(session.joinPlayer('sock_bad_0', 0, 'Tester').code).toBe('TEAM_NUMBER_OUT_OF_RANGE');
+    expect(session.joinPlayer('sock_bad_99', 99, 'Tester').code).toBe('TEAM_NUMBER_OUT_OF_RANGE');
     expect(session.getPublicSnapshot().teams).toHaveLength(0);
 
     // Joining Team 4 then Team 1 spawns only those 2 teams in ascending order [1, 4]
-    expect(session.joinPlayer('sock_4_1', 4).ok).toBe(true);
-    expect(session.joinPlayer('sock_1_1', 1).ok).toBe(true);
+    expect(session.joinPlayer('sock_4_1', 4, 'Tester').ok).toBe(true);
+    expect(session.joinPlayer('sock_1_1', 1, 'Tester').ok).toBe(true);
     expect(session.getPublicSnapshot().teams.map((t) => t.teamNumber)).toEqual([1, 4]);
     expect(session.getPublicSnapshot().teams[0].isSizeValid).toBe(false); // 1 < minTeamSize(4)
 
     // Fill Team 1 up to maxTeamSize (6) -> 7th player on Team 1 rejected with TEAM_FULL (never silently redirected!)
     for (let s = 2; s <= 6; s++) {
-      const res = session.joinPlayer(`sock_1_${s}`, 1);
+      const res = session.joinPlayer(`sock_1_${s}`, 1, 'Tester');
       expect(res.ok).toBe(true);
       expect(res.data?.teamNumber).toBe(1);
     }
     expect(session.getPublicSnapshot().teams[0].isSizeValid).toBe(true);
-    const extraOnTeam1 = session.joinPlayer('sock_overflow_team1', 1);
+    const extraOnTeam1 = session.joinPlayer('sock_overflow_team1', 1, 'Tester');
     expect(extraOnTeam1.ok).toBe(false);
     expect(extraOnTeam1.code).toBe('TEAM_FULL');
 
@@ -87,18 +130,18 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
 
     // Fill remaining seats across Teams 2, 3, 4, 5 up to 30 total players (6 on T1, 6 on T2, 6 on T3, 6 on T4, 6 on T5 = 30)
     for (let s = 2; s <= 6; s++) {
-      expect(session.joinPlayer(`sock_4_${s}`, 4).ok).toBe(true);
+      expect(session.joinPlayer(`sock_4_${s}`, 4, 'Tester').ok).toBe(true);
     }
     for (const t of [2, 3, 5]) {
       for (let s = 1; s <= 6; s++) {
-        expect(session.joinPlayer(`sock_${t}_${s}`, t).ok).toBe(true);
+        expect(session.joinPlayer(`sock_${t}_${s}`, t, 'Tester').ok).toBe(true);
       }
     }
 
     expect(session.getPublicSnapshot().teams.map((t) => t.teamNumber)).toEqual([1, 2, 3, 4, 5]);
 
     // 31st distinct player attempting to spawn Team 6 rejected with SESSION_FULL
-    const p31 = session.joinPlayer('sock_31', 6);
+    const p31 = session.joinPlayer('sock_31', 6, 'Tester');
     expect(p31.ok).toBe(false);
     expect(p31.code).toBe('SESSION_FULL');
   });
@@ -154,13 +197,13 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
       },
     });
 
-    session.joinPlayer('s1', 1);
-    session.joinPlayer('s2', 1);
-    session.joinPlayer('s3', 1);
+    session.joinPlayer('s1', 1, 'Tester');
+    session.joinPlayer('s2', 1, 'Tester');
+    session.joinPlayer('s3', 1, 'Tester');
 
     // Two contenders for the single remaining seat on Team 1
-    const rA = session.joinPlayer('s4_contender_A', 1);
-    const rB = session.joinPlayer('s4_contender_B', 1);
+    const rA = session.joinPlayer('s4_contender_A', 1, 'Tester');
+    const rB = session.joinPlayer('s4_contender_B', 1, 'Tester');
     expect(rA.ok).toBe(true);
     expect(rB.ok).toBe(false);
     expect(rB.code).toBe('TEAM_FULL');

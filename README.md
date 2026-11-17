@@ -8,7 +8,7 @@ Teams of 4–6. At most 30 players. The phone recognizes the motion locally; the
 
 ## How it plays
 
-1. Players join the team number they were given, enable motion, hold still to calibrate, then practice a few strokes.
+1. Players enter a nickname and the team number they were given, enable motion, hold still to calibrate, then practice a few strokes.
 2. The shared display shows each creature and which paddles are live, calibrated, or still learning.
 3. A straight race down parallel lanes. An optional free-water round adds steering and collectibles.
 
@@ -57,7 +57,7 @@ During UI work you can also run `npm run dev:client` (Vite on port `5173`, proxy
 ## Host a session
 
 1. Open `/control`, sign in with `HOST_PASSCODE`, and set the universal min/max team size (default 4–6). Teams are created as people join; you do not pre-build a roster.
-2. Put `/screen` on the projector. Hand out team numbers. Players scan the QR code, enter that number, enable motion, calibrate, and practice.
+2. Put `/screen` on the projector. Hand out team numbers. Optionally press **Show Guide** in Mission Control to project the how-to-play guide. Players scan the QR code, enter a nickname and that number, enable motion, calibrate, and practice.
 3. Watch the readiness columns (online, sensor, calibrated, practiced) and help anyone who is stuck.
 4. Load **Training**, start it, then load **Straight Swim Race** and start the round. Empty or uncalibrated seats warn you; you can override explicitly.
 5. Optionally run a short free-water practice, then a scored harvest.

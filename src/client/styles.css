@@ -998,6 +998,13 @@ button:disabled {
   border: var(--stroke-thin) dashed rgba(20, 18, 31, 0.55);
   color: var(--ink-soft);
 }
+.limb-chip-name {
+  display: inline-block;
+  max-width: 9ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
 .limb-chip.is-calibrated {
   background: var(--comic-blue-pale);
   border-style: solid;
@@ -1378,4 +1385,140 @@ button:disabled {
   .gesture-puck {
     display: none;
   }
+}
+
+/* ============================================================================
+   Classroom display how-to-play guide (toggled from Mission Control)
+   ============================================================================ */
+.guide-stage {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background-color: var(--comic-blue);
+  background-image: radial-gradient(circle at center, rgba(255, 255, 255, 0.22) 0 2.5px, transparent 2.9px);
+  background-size: 16px 16px;
+  display: flex;
+  padding: clamp(0.8rem, 1.6vw, 1.6rem);
+}
+.guide-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'join motion game'
+    'join sweeps sweeps';
+  gap: clamp(0.7rem, 1.2vw, 1.3rem);
+}
+.guide-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: var(--paper);
+  color: var(--ink);
+  border: var(--stroke-bold) solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: clamp(0.8rem, 1.3vw, 1.4rem);
+  font-size: clamp(1rem, 1.35vw, 1.6rem);
+  line-height: 1.3;
+}
+.guide-panel p,
+.guide-panel ul {
+  margin: 0;
+}
+.guide-panel ul {
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+.guide-heading {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.6rem, 2.6vw, 3rem);
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+.guide-num {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 1.5em;
+  height: 1.5em;
+  background: var(--comic-yellow);
+  border: var(--stroke) solid var(--ink);
+  border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+}
+.guide-join {
+  grid-area: join;
+  align-items: center;
+  text-align: center;
+}
+.guide-join .qr-image-frame {
+  flex: 0 1 auto;
+  width: min(100%, 58vh);
+  min-height: 0;
+}
+.guide-join .qr-image-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.guide-motion {
+  grid-area: motion;
+}
+.guide-game {
+  grid-area: game;
+  background: var(--comic-yellow-pale);
+}
+.guide-sweeps {
+  grid-area: sweeps;
+}
+.guide-sweep-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: clamp(0.5rem, 0.9vw, 1rem);
+}
+.guide-sweep-grid .gesture-demo-box {
+  margin: 0;
+  min-height: 0;
+}
+.guide-sweep-grid .gesture-demo-box {
+  gap: clamp(0.6rem, 1vw, 1.2rem);
+  padding: clamp(0.4rem, 0.8vw, 1rem);
+}
+.guide-sweep-grid .gesture-demo-svg {
+  width: clamp(56px, 7.6vw, 150px);
+  height: clamp(56px, 7.6vw, 150px);
+}
+.guide-sweep-grid .gesture-demo-title {
+  font-size: clamp(1rem, 1.7vw, 2rem);
+}
+.guide-panel strong {
+  font-weight: 700;
+  background: var(--comic-yellow);
+  border-radius: 4px;
+  padding: 0 0.18em;
+}
+.guide-game strong {
+  background: var(--paper-white);
+}
+.guide-join .join-url-pill {
+  font-size: clamp(1rem, 1.5vw, 1.8rem);
+}
+.guide-sweep-grid .gesture-demo-sub {
+  display: none;
 }
