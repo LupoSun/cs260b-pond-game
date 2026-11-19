@@ -7,6 +7,11 @@ interface GestureDemoBadgeProps {
   animate: boolean;
   onToggleAnimate?: () => void;
   compact?: boolean;
+  /**
+   * Square tile for the phone controller, where the arrow shares a row with the creature view:
+   * the whole tile is the stop/replay control and the written instruction lives on the hold pad.
+   */
+  tile?: boolean;
 }
 
 const INK = '#14121f';
@@ -21,6 +26,7 @@ export const GestureDemoBadge: React.FC<GestureDemoBadgeProps> = ({
   animate,
   onToggleAnimate,
   compact = false,
+  tile = false,
 }) => {
   const spec = GESTURE_SPECS[gestureId];
   // Convert screen plane (+x right, +y up) to SVG coordinates (+x right, +y down)
@@ -64,86 +70,105 @@ export const GestureDemoBadge: React.FC<GestureDemoBadgeProps> = ({
 
   const patternId = `gesture-dots-${gestureId}`;
 
+  const arrowSvg = (
+    <svg
+      viewBox="0 0 112 112"
+      className="gesture-demo-svg"
+      role="img"
+      aria-label={spec.instruction}
+    >
+      <defs>
+        <pattern id={patternId} width="9" height="9" patternUnits="userSpaceOnUse">
+          <circle cx="2.2" cy="2.2" r="1.5" fill="#ffffff" opacity="0.55" />
+          <circle cx="6.7" cy="6.7" r="1.5" fill="#ffffff" opacity="0.55" />
+        </pattern>
+      </defs>
+      <rect x="9" y="10" width="98" height="98" rx="10" fill={INK} />
+      <rect x="5" y="5" width="98" height="98" rx="10" fill="#1fa8f2" stroke={INK} strokeWidth="4" />
+      <rect x="7" y="7" width="94" height="94" rx="8" fill={`url(#${patternId})`} />
+
+      {/* Speed ticks */}
+      {ticks.map((t, i) => (
+        <line
+          key={i}
+          x1={t.x1}
+          y1={t.y1}
+          x2={t.x2}
+          y2={t.y2}
+          stroke={INK}
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      ))}
+
+      {/* Arrow shaft: ink underlay, yellow fill */}
+      <line
+        x1={startX}
+        y1={startY}
+        x2={baseX}
+        y2={baseY}
+        stroke={INK}
+        strokeWidth="15"
+        strokeLinecap="round"
+      />
+      <polygon
+        points={headPoints}
+        fill="#ffd91a"
+        stroke={INK}
+        strokeWidth="4"
+        strokeLinejoin="round"
+      />
+      <line
+        x1={startX}
+        y1={startY}
+        x2={baseX + Math.cos(angle) * 3}
+        y2={baseY + Math.sin(angle) * 3}
+        stroke="#ffd91a"
+        strokeWidth="8"
+        strokeLinecap="round"
+      />
+
+      {/* Start marker */}
+      <circle cx={startX} cy={startY} r="7.5" fill="#ffffff" stroke={INK} strokeWidth="3" />
+
+      {/* Looping animated hand puck (respects prefers-reduced-motion in CSS + manual toggle) */}
+      {animate && (
+        <circle r="8.5" fill="#ff5aa5" stroke={INK} strokeWidth="3" className="gesture-puck">
+          <animateMotion
+            dur="1.45s"
+            repeatCount="indefinite"
+            path={`M ${startX} ${startY} L ${endX} ${endY}`}
+            keyTimes="0;0.65;1"
+            keyPoints="0;1;1"
+            calcMode="spline"
+            keySplines="0.22 1 0.36 1; 0 0 1 1"
+          />
+        </circle>
+      )}
+    </svg>
+  );
+
+  if (tile) {
+    return (
+      <button
+        type="button"
+        className="gesture-tile"
+        aria-pressed={animate}
+        aria-label={`Your sweep: ${spec.instruction}. ${animate ? 'Pause' : 'Replay'} the demo.`}
+        onClick={onToggleAnimate}
+      >
+        {arrowSvg}
+        <span className="gesture-tile-caption">{animate ? 'Pause demo' : 'Replay demo'}</span>
+      </button>
+    );
+  }
+
   return (
     <div className={`gesture-demo-box ${compact ? 'gesture-demo-compact' : ''}`}>
-      <svg
-        viewBox="0 0 112 112"
-        className="gesture-demo-svg"
-        role="img"
-        aria-label={spec.instruction}
-      >
-        <defs>
-          <pattern id={patternId} width="9" height="9" patternUnits="userSpaceOnUse">
-            <circle cx="2.2" cy="2.2" r="1.5" fill="#ffffff" opacity="0.55" />
-            <circle cx="6.7" cy="6.7" r="1.5" fill="#ffffff" opacity="0.55" />
-          </pattern>
-        </defs>
-        <rect x="9" y="10" width="98" height="98" rx="10" fill={INK} />
-        <rect x="5" y="5" width="98" height="98" rx="10" fill="#1fa8f2" stroke={INK} strokeWidth="4" />
-        <rect x="7" y="7" width="94" height="94" rx="8" fill={`url(#${patternId})`} />
-
-        {/* Speed ticks */}
-        {ticks.map((t, i) => (
-          <line
-            key={i}
-            x1={t.x1}
-            y1={t.y1}
-            x2={t.x2}
-            y2={t.y2}
-            stroke={INK}
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
-        ))}
-
-        {/* Arrow shaft: ink underlay, yellow fill */}
-        <line
-          x1={startX}
-          y1={startY}
-          x2={baseX}
-          y2={baseY}
-          stroke={INK}
-          strokeWidth="15"
-          strokeLinecap="round"
-        />
-        <polygon
-          points={headPoints}
-          fill="#ffd91a"
-          stroke={INK}
-          strokeWidth="4"
-          strokeLinejoin="round"
-        />
-        <line
-          x1={startX}
-          y1={startY}
-          x2={baseX + Math.cos(angle) * 3}
-          y2={baseY + Math.sin(angle) * 3}
-          stroke="#ffd91a"
-          strokeWidth="8"
-          strokeLinecap="round"
-        />
-
-        {/* Start marker */}
-        <circle cx={startX} cy={startY} r="7.5" fill="#ffffff" stroke={INK} strokeWidth="3" />
-
-        {/* Looping animated hand puck (respects prefers-reduced-motion in CSS + manual toggle) */}
-        {animate && (
-          <circle r="8.5" fill="#ff5aa5" stroke={INK} strokeWidth="3" className="gesture-puck">
-            <animateMotion
-              dur="1.45s"
-              repeatCount="indefinite"
-              path={`M ${startX} ${startY} L ${endX} ${endY}`}
-              keyTimes="0;0.65;1"
-              keyPoints="0;1;1"
-              calcMode="spline"
-              keySplines="0.22 1 0.36 1; 0 0 1 1"
-            />
-          </circle>
-        )}
-      </svg>
+      {arrowSvg}
       <div className="gesture-demo-meta">
         <div className="gesture-demo-title">{spec.instruction}</div>
-        <div className="gesture-demo-sub">Hold to sweep · Release to return</div>
+        <div className="gesture-demo-sub">Press · Move · Release</div>
         {onToggleAnimate && (
           <button
             type="button"

@@ -1,4 +1,47 @@
-export type ActivityPhase = 'lobby' | 'training' | 'straight' | 'freewater';
+export type ActivityPhase =
+  | 'lobby'
+  | 'training'
+  | 'straight'
+  | 'freewater'
+  | 'discussion'
+  | 'leaderboard';
+
+/** Phases a facilitator can stage with `load_phase` (the lobby is only the initial state). */
+export type LoadablePhase = Exclude<ActivityPhase, 'lobby'>;
+
+/** Which prompt set a dedicated discussion phase projects. */
+export type DiscussionTopic = 'before_game1' | 'after_game1';
+
+/**
+ * The timed sections of the session plan, in running order. Each has a time budget that the
+ * section clock counts down from. The leaderboard has no budget and so no section.
+ */
+export type SectionId =
+  | 'joining'
+  | 'training'
+  | 'game1_prep'
+  | 'discussion_before_game1'
+  | 'game1'
+  | 'discussion_after_game1'
+  | 'game2_prep'
+  | 'game2';
+
+/**
+ * Clock for the section on screen, started when the phase is loaded. Reaching zero ends a scored
+ * game (Game 1, Game 2) and nothing else: every other section only shows the overrun.
+ * `remainingMs` keeps counting below zero so the room can see how far over it is.
+ */
+export interface SectionClockState {
+  /** Null when the current phase has no time budget (the leaderboard) */
+  section: SectionId | null;
+  budgetSec: number;
+  /** False while the clock is waiting to start (only the joining section waits) */
+  running: boolean;
+  /** Wall-clock time since the section began; not frozen by pausing a round */
+  elapsedMs: number;
+  /** budgetSec * 1000 - elapsedMs; negative once the section has overrun */
+  remainingMs: number;
+}
 
 export type RunStatus = 'ready' | 'countdown' | 'running' | 'paused' | 'finished';
 
@@ -118,9 +161,16 @@ export interface TeamSimState {
   finished: boolean;
   finishTimeMs: number | null;
   rank: number | null;
+  /** Free water: points from collected items (Game 2 Prep counts them too, but keeps no result) */
   score: number;
+  /** Free water: how many items those points came from */
+  itemsCollected: number;
   /** Transient spring offset in training card [0..1] */
   trainingPulse: number;
+  /** Straight swim only: limbs that stroked together in the latest sync group (0 = none yet) */
+  syncCount: number;
+  /** Server time of the latest stroke that joined that sync group */
+  syncAtMs: number | null;
 }
 
 export interface TeamPublicState {
@@ -151,13 +201,18 @@ export interface TeamPublicState {
   sim: TeamSimState;
 }
 
+/** Collectible kinds, from common to rare; point values live in POND_ITEMS (shared/constants.ts) */
+export type PondItemVariant = 'glow_seed' | 'golden_bug' | 'pond_star';
+
 export interface PondItemPublicState {
   itemId: string;
   x: number;
   y: number;
   radius: number;
   available: boolean;
-  variant: 'golden_bug' | 'glow_seed';
+  variant: PondItemVariant;
+  /** Points this item is worth when collected */
+  points: number;
   collectedByTeam: number | null;
   collectedAtMs: number | null;
 }
@@ -167,18 +222,63 @@ export interface RoundPublicState {
   phase: ActivityPhase;
   scoringEnabled: boolean;
   runStatus: RunStatus;
-  pausedForDiscussion: boolean;
+  /** Prompt set shown while phase === 'discussion'; null in every other phase */
+  discussionTopic: DiscussionTopic | null;
   seed: number;
-  durationSec: number;
   /** Elapsed active simulation time in ms (freezes while paused) */
   activeElapsedMs: number;
-  remainingMs: number;
   /** Countdown remaining ms when runStatus === 'countdown' */
   countdownRemainingMs: number;
   courseLength: number;
   arenaWidth: number;
   arenaHeight: number;
   items: PondItemPublicState[];
+}
+
+/** One team's line in a completed scored game, frozen when that round finished. */
+export interface GameTeamResult {
+  teamNumber: number;
+  rank: number | null;
+  /** Straight race: crossed the finish line before the round ended */
+  finished: boolean;
+  finishTimeMs: number | null;
+  /** Straight race: share of the course covered, 0..100 */
+  progressPct: number;
+  /** Free water: points from collected items */
+  score: number;
+  /** Free water: number of items collected (null in the straight race) */
+  items: number | null;
+  /** Accepted strokes that counted toward this round */
+  strokes: number;
+  /** Straight race: mean share of the team's limbs stroking together, 0..1 (null in free water or with no strokes) */
+  syncAvg: number | null;
+  /** Straight race: strokes where every joined limb landed together (null in free water) */
+  fullSyncCount: number | null;
+}
+
+export interface GameResultPublic {
+  game: 'straight' | 'freewater';
+  roundId: string;
+  /** Active time the round ran for */
+  activeElapsedMs: number;
+  /** `time_up`: the section clock reached zero, which ends the two scored games and nothing else */
+  endedBy: 'all_finished' | 'time_up' | 'facilitator';
+  teams: GameTeamResult[];
+}
+
+export interface LeaderboardStanding {
+  teamNumber: number;
+  /** Shared on equal points */
+  rank: number;
+  /** Placement points summed over completed games (see GAME_DEFAULTS / spec 10.5) */
+  points: number;
+}
+
+/** Most recently completed scored run of each game plus the combined standings. */
+export interface LeaderboardPublicState {
+  straight: GameResultPublic | null;
+  freewater: GameResultPublic | null;
+  standings: LeaderboardStanding[];
 }
 
 export interface SessionPublicSnapshot {
@@ -193,6 +293,8 @@ export interface SessionPublicSnapshot {
   admissionLocked: boolean;
   /** Facilitator-toggled how-to-play guide on the classroom display (presentation only) */
   guideVisible: boolean;
+  /** Facilitator-toggled background music on the classroom display (presentation only, off by default) */
+  musicEnabled: boolean;
   minTeamSize: number;
   maxTeamSize: number;
   maxTeamNumber: number;
@@ -201,6 +303,11 @@ export interface SessionPublicSnapshot {
   /** Dynamically populated teams that have >= 1 joined player, sorted by teamNumber */
   teams: TeamPublicState[];
   round: RoundPublicState;
+  /** Clock for the section on screen; at zero it ends a scored game and only warns everywhere else */
+  sectionClock: SectionClockState;
+  /** Time budget of every section, as currently set for this server run */
+  sectionBudgetsSec: Record<SectionId, number>;
+  leaderboard: LeaderboardPublicState;
 }
 
 export interface HostPlayerDiagnostic {
@@ -209,6 +316,11 @@ export interface HostPlayerDiagnostic {
   teamNumber: number;
   limbIndex: number;
   limbLabel: string;
+  /**
+   * False once a disconnected player's limb has been released from the creature. The identity,
+   * team, gesture, and calibration are kept so the same phone can return.
+   */
+  seated: boolean;
   gestureId: GestureId;
   gestureInstruction: string;
   connected: boolean;
@@ -337,21 +449,35 @@ export type HostCommandPayload =
     }
   | {
       commandId: string;
+      type: 'set_music_enabled';
+      enabled: boolean;
+    }
+  | {
+      commandId: string;
       type: 'set_network_mode';
       networkMode: NetworkPresentationMode;
     }
   | {
+      /** Changes how long a section is planned to take. In a live scored game this moves its end. */
       commandId: string;
-      type: 'set_round_duration';
-      durationSec: number;
+      type: 'set_section_budget';
+      section: SectionId;
+      budgetSec: number;
+    }
+  | {
+      /** Starts the current section's clock again from its full budget */
+      commandId: string;
+      type: 'restart_section_clock';
     }
   | {
       commandId: string;
       type: 'load_phase';
-      phase: 'training' | 'straight' | 'freewater';
+      phase: LoadablePhase;
+      /** Straight and free water only: false stages the unscored prep round */
       scoringEnabled?: boolean;
-      durationSec?: number;
       seed?: number;
+      /** Discussion only */
+      discussionTopic?: DiscussionTopic;
     }
   | {
       commandId: string;
@@ -361,7 +487,6 @@ export type HostCommandPayload =
   | {
       commandId: string;
       type: 'pause_phase';
-      forDiscussion?: boolean;
     }
   | {
       commandId: string;
@@ -415,6 +540,9 @@ export interface ItemCollectedBroadcast {
   itemId: string;
   roundId: string;
   teamNumber: number;
+  variant: PondItemVariant;
+  /** Points this item added */
+  points: number;
   newScore: number;
   x: number;
   y: number;

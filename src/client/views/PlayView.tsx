@@ -6,8 +6,9 @@ import { PhysicalSweepRecognizer } from '../../sensor/sweepRecognizer.js';
 import { generateRealisticSweepSamples, generateStationarySamples } from '../../sensor/syntheticTraces.js';
 import { TiltFallbackRecognizer } from '../../sensor/tiltRecognizer.js';
 import type { ExtendedCalibrationData, RecognizedStrokeCandidate } from '../../sensor/types.js';
-import { GAME_DEFAULTS, GESTURE_SPECS, RECOGNIZER_DEFAULTS } from '../../shared/constants.js';
+import { GAME_DEFAULTS, GESTURE_SPECS, RECOGNIZER_DEFAULTS, describePhase } from '../../shared/constants.js';
 import { PLAYER_NAME_MAX_LENGTH, sanitizePlayerName } from '../../shared/playerName.js';
+import { SweepSteps, type SweepStage } from '../components/SweepSteps.js';
 import type {
   AckResponse,
   CalibrationSummary,
@@ -39,7 +40,10 @@ const POP_WORDS = ['SPLASH!', 'SWOOSH!', 'POW!', 'ZOOM!'];
 const SETUP_STEP_LABELS = ['Enable motion', 'Calibrate', 'Practice'];
 
 /** Three-dot tracker for the sensors -> calibrate -> practice onboarding steps. */
-const SetupStepTrack: React.FC<{ current: 1 | 2 | 3 }> = ({ current }) => (
+const SetupStepTrack: React.FC<{ current: 1 | 2 | 3; showLabel?: boolean }> = ({
+  current,
+  showLabel = true,
+}) => (
   <div className="step-track" aria-label={`Setup step ${current} of 3: ${SETUP_STEP_LABELS[current - 1]}`}>
     {[1, 2, 3].map((n) => (
       <React.Fragment key={n}>
@@ -52,9 +56,18 @@ const SetupStepTrack: React.FC<{ current: 1 | 2 | 3 }> = ({ current }) => (
         </span>
       </React.Fragment>
     ))}
-    <span style={{ marginLeft: '0.3rem' }}>{SETUP_STEP_LABELS[current - 1]}</span>
+    {showLabel && <span style={{ marginLeft: '0.3rem' }}>{SETUP_STEP_LABELS[current - 1]}</span>}
   </div>
 );
+
+/** iPhone and iPad only: the system offers "Undo Typing" when the device is shaken. */
+function isAppleTouchDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
 
 const AcceptedPop: React.FC<{ seq: number }> = ({ seq }) => (
   <span className="pad-pop" aria-hidden="true">
@@ -92,7 +105,7 @@ export const PlayView: React.FC = () => {
   const [held, setHeld] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusKind, setStatusKind] = useState<'neutral' | 'local' | 'accepted' | 'warn'>('neutral');
-  const [statusMessage, setStatusMessage] = useState('Hold the button while sweeping; release to return.');
+  const [statusMessage, setStatusMessage] = useState('Press the pad, move along your arrow, release.');
   const [animateDemo, setAnimateDemo] = useState(true);
   const [muted, setMuted] = useState(false);
   const [hapticsOn, setHapticsOn] = useState(true);
@@ -165,26 +178,45 @@ export const PlayView: React.FC = () => {
     }
   }, []);
 
-  const submitStrokeToServer = useCallback((candidate: RecognizedStrokeCandidate) => {
+  /**
+   * True when this phone's presses, previews, and strokes should reach the server.
+   * The controller always does. The onboarding practice step does too while Training is running,
+   * so practice sweeps animate the limb on the classroom grid; outside Training it stays local.
+   */
+  const mirrorsInputToServer = useCallback((): boolean => {
+    if (stepRef.current === 'controller') return true;
+    const curSnap = snapRef.current;
+    return (
+      stepRef.current === 'practice' &&
+      Boolean(seatRef.current?.calibrated) &&
+      curSnap?.phase === 'training' &&
+      curSnap.runStatus === 'running'
+    );
+  }, []);
+
+  /** `quiet` leaves the status banner alone: the practice step reports its own local result. */
+  const submitStrokeToServer = useCallback((candidate: RecognizedStrokeCandidate, quiet = false) => {
     const sock = socketRef.current;
     const curSeat = seatRef.current;
     const curSnap = snapRef.current;
+    const report = (kind: 'local' | 'accepted' | 'warn', message: string) => {
+      if (quiet) return;
+      setStatusKind(kind);
+      setStatusMessage(message);
+    };
 
     // Never queue strokes while offline (Section 12.5)
     if (!sock || !sock.connected || !curSeat || !curSnap) {
-      setStatusKind('warn');
-      setStatusMessage('Offline: stroke not queued. Wait for connection.');
+      report('warn', 'Offline: stroke not queued. Wait for connection.');
       return;
     }
 
     if (curSnap.phase === 'lobby' || curSnap.runStatus !== 'running') {
-      setStatusKind('local');
-      setStatusMessage('Motion recognized locally (round not active yet).');
+      report('local', 'Motion recognized locally (round not active yet).');
       return;
     }
 
-    setStatusKind('local');
-    setStatusMessage('Motion recognized · confirming...');
+    report('local', 'Motion recognized · confirming...');
 
     const payload: StrokeCompletePayload = {
       strokeId: candidate.strokeId,
@@ -231,20 +263,17 @@ export const PlayView: React.FC = () => {
               sendOnce();
             } else {
               settled = true;
-              setStatusKind('warn');
-              setStatusMessage('Network delayed; release and try next stroke.');
+              report('warn', 'Network delayed; release and try next stroke.');
             }
             return;
           }
 
           settled = true;
           if (ack?.ok) {
-            setStatusKind('accepted');
-            setStatusMessage('Stroke accepted ✓ Release to return');
-            feedbackRef.current.playTone('accepted');
+            report('accepted', 'Stroke accepted ✓ Release to return');
+            if (!quiet) feedbackRef.current.playTone('accepted');
           } else {
-            setStatusKind('warn');
-            setStatusMessage(ack?.message || 'Stroke not counted.');
+            report('warn', ack?.message || 'Stroke not counted.');
           }
         },
       );
@@ -327,7 +356,13 @@ export const PlayView: React.FC = () => {
               setStep('sensors');
             }
           } else if (res?.code === 'SEAT_NOT_FOUND') {
+            // The seat is gone (session restarted, or the team filled up while this phone was away)
             window.localStorage.removeItem(RESUME_STORAGE_KEY);
+            setSeat(null);
+            setLocalCal(null);
+            setPracticeSuccesses(0);
+            setStep('join');
+            setJoinError(res.message || 'Your earlier seat is no longer available. Join again.');
           }
         });
       } catch {
@@ -459,7 +494,7 @@ export const PlayView: React.FC = () => {
         const curSeat = seatRef.current;
         const sock = socketRef.current;
         if (
-          stepRef.current === 'controller' &&
+          mirrorsInputToServer() &&
           curSnap?.networkMode === 'continuous' &&
           sock?.connected &&
           curSeat &&
@@ -492,6 +527,7 @@ export const PlayView: React.FC = () => {
           setStatusKind('accepted');
           setStatusMessage('Great sweep! Release button to return.');
           feedbackRef.current.playTone('accepted');
+          if (mirrorsInputToServer()) submitStrokeToServer(recUpdate.strokeCandidate, true);
         } else if (stepRef.current === 'controller') {
           submitStrokeToServer(recUpdate.strokeCandidate);
         }
@@ -515,7 +551,7 @@ export const PlayView: React.FC = () => {
       window.removeEventListener('blur', onVisibilityOrBlur);
       document.removeEventListener('visibilitychange', onVisibilityOrBlur);
     };
-  }, [cancelActiveHold, submitStrokeToServer]);
+  }, [cancelActiveHold, mirrorsInputToServer, submitStrokeToServer]);
 
   // =========================================================================
   // Onboarding Handlers
@@ -552,6 +588,23 @@ export const PlayView: React.FC = () => {
         RESUME_STORAGE_KEY,
         JSON.stringify({ sessionId: res.data.sessionId, resumeToken: res.data.resumeToken }),
       );
+
+      // iOS "Shake to Undo": a web page cannot switch it off, but the prompt only has something to
+      // offer while this page holds typing history. The name and team number are the only things
+      // ever typed, so reloading once here starts the rest of the activity with nothing to undo.
+      // The seat comes straight back through the stored resume token; it is only done when that
+      // token is confirmed saved. UNTESTED on a physical iPhone.
+      if (isAppleTouchDevice()) {
+        try {
+          const saved = window.localStorage.getItem(RESUME_STORAGE_KEY);
+          if (saved && saved.includes(res.data.resumeToken)) {
+            window.location.reload();
+            return;
+          }
+        } catch {
+          // Storage unavailable: carry on without the reload rather than risk losing the seat
+        }
+      }
       setSeat(res.data);
       sweepRecRef.current.setGesture(res.data.assignment.gestureId);
       tiltRecRef.current.setGesture(res.data.assignment.gestureId);
@@ -712,8 +765,21 @@ export const PlayView: React.FC = () => {
     }
     setStep('controller');
     setStatusKind('neutral');
-    setStatusMessage('Ready! Hold button during your sweep, release on return.');
+    setStatusMessage('Ready! Press, move along your arrow, release.');
   };
+
+  // Mission Control can bring a ready player along: once the facilitator loads anything past Training,
+  // a phone that already has its three practice sweeps moves into the controller on its own, so nobody
+  // is left behind for forgetting the "Enter Controller" button. Players short of three stay in practice.
+  const practiceComplete = practiceSuccesses >= RECOGNIZER_DEFAULTS.practiceAttemptsTarget;
+  const sessionMovedPastTraining =
+    snapshot != null && snapshot.phase !== 'lobby' && snapshot.phase !== 'training';
+  useEffect(() => {
+    if (step !== 'practice' || held) return;
+    if (!practiceComplete || !sessionMovedPastTraining) return;
+    // Waits for the pad to be released (held) so a sweep in progress is never cut off
+    finishPracticeIntoController();
+  }, [step, held, practiceComplete, sessionMovedPastTraining]);
 
   // =========================================================================
   // Pointer-Captured Paddle Hold & Touch Fallback Handlers
@@ -757,7 +823,7 @@ export const PlayView: React.FC = () => {
       setStatusKind('neutral');
       setStatusMessage(`Slide finger: ${GESTURE_SPECS[seat.assignment.gestureId].instruction}`);
 
-      if (step === 'controller' && snapshot && socketRef.current?.connected) {
+      if (mirrorsInputToServer() && snapshot && socketRef.current?.connected) {
         socketRef.current.emit('input.begin', {
           attemptId,
           attemptSeq,
@@ -787,7 +853,7 @@ export const PlayView: React.FC = () => {
         ? tiltRecRef.current.getAttemptMeta()
         : sweepRecRef.current.getAttemptMeta();
 
-    if (step === 'controller' && snapshot && socketRef.current?.connected) {
+    if (mirrorsInputToServer() && snapshot && socketRef.current?.connected) {
       socketRef.current.emit('input.begin', {
         attemptId: meta.attemptId,
         attemptSeq: meta.attemptSeq,
@@ -830,7 +896,7 @@ export const PlayView: React.FC = () => {
     setProgress(prog);
 
     if (
-      step === 'controller' &&
+      mirrorsInputToServer() &&
       snapshot?.networkMode === 'continuous' &&
       socketRef.current?.connected &&
       performance.now() - lastPreviewSentMsRef.current >= GAME_DEFAULTS.previewIntervalMs
@@ -853,25 +919,28 @@ export const PlayView: React.FC = () => {
       setProgress(1);
       feedbackRef.current.pulseLatchedRecognition();
 
+      const touchCandidate: RecognizedStrokeCandidate = {
+        strokeId: `tfstk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        attemptId: start.attemptId,
+        attemptSeq: start.attemptSeq,
+        gestureId: seat.assignment.gestureId,
+        durationMs: Math.max(150, Math.round(elapsedMs)),
+        peakSignalMps2: 1,
+        forwardImpulseMps: 1,
+        workingAngleDeg: 0,
+        targetAngleDeg: 0,
+        angleErrorDeg: Math.round(angleErrDeg),
+        consistency: 1,
+      };
+
       if (step === 'practice') {
         setPracticeSuccesses((c) => c + 1);
         setStatusKind('accepted');
         setStatusMessage('Touch fallback stroke recognized ✓ Release finger.');
         feedbackRef.current.playTone('accepted');
+        if (mirrorsInputToServer()) submitStrokeToServer(touchCandidate, true);
       } else if (step === 'controller') {
-        submitStrokeToServer({
-          strokeId: `tfstk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-          attemptId: start.attemptId,
-          attemptSeq: start.attemptSeq,
-          gestureId: seat.assignment.gestureId,
-          durationMs: Math.max(150, Math.round(elapsedMs)),
-          peakSignalMps2: 1,
-          forwardImpulseMps: 1,
-          workingAngleDeg: 0,
-          targetAngleDeg: 0,
-          angleErrorDeg: Math.round(angleErrDeg),
-          consistency: 1,
-        });
+        submitStrokeToServer(touchCandidate);
       }
     }
   };
@@ -893,7 +962,7 @@ export const PlayView: React.FC = () => {
         setStatusKind('warn');
         setStatusMessage('Swipe further along the arrow before releasing.');
       }
-      if (step === 'controller' && start && curSeat && curSnap && socketRef.current?.connected) {
+      if (mirrorsInputToServer() && start && curSeat && curSnap && socketRef.current?.connected) {
         socketRef.current.emit('input.release', {
           attemptId: start.attemptId,
           attemptSeq: start.attemptSeq,
@@ -923,6 +992,7 @@ export const PlayView: React.FC = () => {
         setPracticeSuccesses((c) => c + 1);
         setStatusKind('accepted');
         setStatusMessage('Great sweep! Release complete.');
+        if (mirrorsInputToServer()) submitStrokeToServer(relStep.strokeCandidate, true);
       } else if (step === 'controller') {
         submitStrokeToServer(relStep.strokeCandidate);
       }
@@ -931,7 +1001,7 @@ export const PlayView: React.FC = () => {
       setStatusMessage(relStep.reasonText);
     }
 
-    if (step === 'controller' && meta.attemptId && curSeat && curSnap && socketRef.current?.connected) {
+    if (mirrorsInputToServer() && meta.attemptId && curSeat && curSnap && socketRef.current?.connected) {
       socketRef.current.emit('input.release', {
         attemptId: meta.attemptId,
         attemptSeq: meta.attemptSeq,
@@ -957,7 +1027,7 @@ export const PlayView: React.FC = () => {
 
     const metaStep = sweepRecRef.current.beginAttempt(t0, { beta: 55, gamma: 3 });
     const meta = sweepRecRef.current.getAttemptMeta();
-    if (step === 'controller' && socketRef.current?.connected) {
+    if (mirrorsInputToServer() && socketRef.current?.connected) {
       socketRef.current.emit('input.begin', {
         attemptId: meta.attemptId,
         attemptSeq: meta.attemptSeq,
@@ -977,7 +1047,7 @@ export const PlayView: React.FC = () => {
     });
     samples.forEach((s) => sensorMgrRef.current.injectDevSyntheticSample(s));
     sweepRecRef.current.releaseAttempt(samples[samples.length - 1].timestampMs + 20);
-    if (step === 'controller' && socketRef.current?.connected) {
+    if (mirrorsInputToServer() && socketRef.current?.connected) {
       socketRef.current.emit('input.release', {
         attemptId: meta.attemptId,
         attemptSeq: meta.attemptSeq,
@@ -1097,16 +1167,22 @@ export const PlayView: React.FC = () => {
   }
 
   const teamState = snapshot?.teams.find((t) => t.teamNumber === seat.teamNumber) ?? null;
+  // Limbs are renumbered when a teammate's limb is released or grows back, so this phone's limb is
+  // looked up in the live snapshot instead of trusting the number it was given at join
+  const myLimb = teamState?.limbs.find((l) => l.assignedPlayerId === seat.playerId) ?? null;
+  const myLimbIndex = myLimb ? myLimb.limbIndex : seat.limbIndex;
+  const myLimbLabel = myLimb ? myLimb.limbLabel : seat.limbLabel;
+  const sweepStage: SweepStage = !held ? 'press' : statusKind === 'accepted' ? 'release' : 'move';
 
   // Onboarding Steps: Sensors -> Calibrate -> Practice
   if (step !== 'controller') {
     return (
-      <main className="play-shell">
+      <main className={`play-shell ${step === 'practice' ? 'play-practice-fit' : ''}`}>
         <header className="play-topbar">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div className="onboard-identity">
             <span className="team-swatch-dot" style={{ backgroundColor: seat.colorHex }} />
             <span className="play-topbar-title">
-              {seat.playerName} · Team {seat.teamNumber} · {seat.limbLabel}
+              {seat.playerName} · Team {seat.teamNumber} · {myLimbLabel}
             </span>
           </div>
           <span className={`pill ${connected ? 'pill-running' : 'pill-danger'}`}>
@@ -1118,12 +1194,14 @@ export const PlayView: React.FC = () => {
           <section className="onboard-panel">
             <SetupStepTrack current={1} />
             <h1>
-              You're In, {seat.playerName}! Team {seat.teamNumber} · {seat.limbLabel}
+              You're In, {seat.playerName}! Team {seat.teamNumber} · {myLimbLabel}
             </h1>
             <p>
               Your assigned movement is <strong>{GESTURE_SPECS[seat.assignment.gestureId].instruction}</strong>.
-              Tap below to enable phone motion sensors.
+              Every stroke is the same three beats:
             </p>
+            <SweepSteps />
+            <p>Tap below to enable phone motion sensors.</p>
 
             <button
               type="button"
@@ -1181,6 +1259,11 @@ export const PlayView: React.FC = () => {
               Sit comfortably and hold your phone in <strong>portrait orientation</strong> with the
               screen facing you. Keep your hand still for under a second.
             </p>
+            <p className="rotation-tip">
+              <strong>Lock screen rotation first</strong> so a sweep can't flip this page sideways.
+              iPhone: swipe down from the top-right corner and tap the rotation lock. Android: swipe
+              down from the top and switch Auto-rotate off.
+            </p>
 
             <button
               type="button"
@@ -1230,25 +1313,51 @@ export const PlayView: React.FC = () => {
           </section>
         )}
 
+        {/* Practice: head, tip, sweep demo, status, pad, actions. Sized to one screen so the pad and
+            the way forward are both visible without scrolling. */}
         {step === 'practice' && (
-          <section className="onboard-panel">
-            <SetupStepTrack current={3} />
-            <h1>
-              Practice Your Motion ({Math.min(3, practiceSuccesses)} / {RECOGNIZER_DEFAULTS.practiceAttemptsTarget})
-            </h1>
-            <p>
-              Keep movements compact (10 to 20 cm, well within 50 cm).{' '}
-              <strong>Hold the pad during your sweep, then release while returning.</strong>
-            </p>
+          <section className="onboard-panel practice-panel">
+            <div className="practice-head">
+              <SetupStepTrack current={3} showLabel={false} />
+              <h1 className="practice-title">
+                Practice{' '}
+                <span className="practice-count">
+                  {Math.min(RECOGNIZER_DEFAULTS.practiceAttemptsTarget, practiceSuccesses)} /{' '}
+                  {RECOGNIZER_DEFAULTS.practiceAttemptsTarget}
+                </span>
+              </h1>
+            </div>
+
+            {sessionMovedPastTraining && !practiceComplete ? (
+              <p className="practice-tip practice-tip-alert" role="status">
+                The class moved on to {describePhase(snapshot.phase, snapshot.round.scoringEnabled)}.
+                Finish your sweeps or tap Skip.
+              </p>
+            ) : (
+              <p className="practice-tip">
+                <strong>Press</strong> the pad, <strong>move</strong> the phone 10 to 20 cm along
+                your arrow, <strong>release</strong>, then bring it back.
+              </p>
+            )}
 
             <GestureDemoBadge
               gestureId={seat.assignment.gestureId}
               animate={animateDemo}
               onToggleAnimate={() => setAnimateDemo((a) => !a)}
+              compact
             />
 
-            <div className={`status-banner ${statusKind === 'accepted' ? 'status-banner-accepted' : statusKind === 'warn' ? 'status-banner-warn' : ''}`}>
+            <div
+              className={`status-banner status-banner-fixed ${statusKind === 'accepted' ? 'status-banner-accepted' : statusKind === 'warn' ? 'status-banner-warn' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
               <span>{statusMessage}</span>
+              {snapshot?.devSimAvailable && (
+                <button type="button" className="btn-subtle btn-xs" onClick={triggerDevSimulatedStroke}>
+                  [DEV SIM]
+                </button>
+              )}
             </div>
 
             <div
@@ -1265,12 +1374,13 @@ export const PlayView: React.FC = () => {
               {statusKind === 'accepted' && acceptedPopSeq > 0 && (
                 <AcceptedPop key={acceptedPopSeq} seq={acceptedPopSeq} />
               )}
+              <SweepSteps stage={sweepStage} />
               <div className="paddle-hold-title">
                 {inputMethod === 'touch_fallback'
                   ? 'Press & Swipe Arrow'
                   : held
-                    ? 'Sweep Now, Then Release'
-                    : 'Hold to Practice Sweep'}
+                    ? 'Move, Then Release'
+                    : 'Press & Hold'}
               </div>
               <div className="paddle-hold-hint">
                 {GESTURE_SPECS[seat.assignment.gestureId].instruction}
@@ -1280,7 +1390,7 @@ export const PlayView: React.FC = () => {
               </div>
             </div>
 
-            <div className="btn-row" style={{ justifyContent: 'space-between' }}>
+            <div className="practice-actions">
               <button
                 type="button"
                 className="btn-subtle btn-xs"
@@ -1293,21 +1403,12 @@ export const PlayView: React.FC = () => {
               >
                 Recalibrate
               </button>
-              {snapshot?.devSimAvailable && (
-                <button
-                  type="button"
-                  className="btn-subtle btn-xs"
-                  onClick={triggerDevSimulatedStroke}
-                >
-                  [DEV SIM] Practice Sweep
-                </button>
-              )}
               <button
                 type="button"
-                className={practiceSuccesses >= 3 ? 'btn-primary' : 'btn-secondary'}
+                className={practiceComplete ? 'btn-primary' : 'btn-secondary'}
                 onClick={finishPracticeIntoController}
               >
-                {practiceSuccesses >= 3 ? 'Enter Controller →' : 'Skip Remaining Practice'}
+                {practiceComplete ? 'Enter Controller →' : 'Skip Practice'}
               </button>
             </div>
           </section>
@@ -1324,31 +1425,39 @@ export const PlayView: React.FC = () => {
     ? 'Reconnecting to pond server...'
     : snapshot?.phase === 'lobby'
       ? 'Waiting for facilitator to open Training...'
-      : snapshot?.runStatus === 'paused'
-        ? snapshot.round.pausedForDiscussion
-          ? 'Paused for classroom discussion'
-          : 'Paused by facilitator. Wait to resume.'
-        : snapshot?.runStatus === 'ready'
-          ? `Staged: ${snapshot.phase}. Waiting for Start.`
-          : snapshot?.runStatus === 'countdown'
+      : snapshot?.phase === 'discussion'
+        ? 'Discussion time. Eyes on the classroom screen.'
+        : snapshot?.phase === 'leaderboard'
+          ? 'Leaderboard is up on the classroom screen!'
+          : snapshot?.runStatus === 'paused'
+            ? 'Paused by facilitator. Wait to resume.'
+            : snapshot?.runStatus === 'ready'
+              ? `Up next: ${describePhase(snapshot.phase, snapshot.round.scoringEnabled)}. Waiting for Start.`
+              : snapshot?.runStatus === 'countdown'
             ? `Get ready! Starting in ${Math.ceil((snapshot.round.countdownRemainingMs || 1000) / 1000)}...`
             : snapshot?.runStatus === 'finished'
               ? 'Round finished! Check classroom screen for results'
               : statusMessage;
 
   const padDisabled = !canSubmitLiveInput;
+  const canRecalibrateNow =
+    snapshot?.phase === 'lobby' ||
+    snapshot?.phase === 'training' ||
+    snapshot?.runStatus === 'paused' ||
+    snapshot?.runStatus === 'ready';
 
   return (
     <main className="play-shell play-controller-locked">
-      {/* Top Identity & Preferences Bar */}
-      <header className="play-topbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+      {/* Row 1: identity and preferences. Two fixed text lines, so its height never depends on the name. */}
+      <header className="play-topbar controller-topbar">
+        <div className="controller-identity">
           <span className="team-swatch-dot" style={{ backgroundColor: seat.colorHex }} />
-          <div>
+          <div className="controller-identity-text">
             <div className="play-topbar-title">
-              {seat.playerName} · Team {seat.teamNumber} · {seat.limbLabel}
+              Team {seat.teamNumber} · {myLimbLabel}
             </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--ink-secondary)' }}>
+            <div className="controller-identity-sub">
+              {seat.playerName} ·{' '}
               {inputMethod === 'physical_sweep'
                 ? 'Physical Sweep'
                 : inputMethod === 'tilt'
@@ -1358,25 +1467,23 @@ export const PlayView: React.FC = () => {
           </div>
         </div>
 
-        <div className="btn-row" style={{ gap: '0.3rem' }}>
-          {inputMethod !== 'touch_fallback' &&
-            (snapshot?.phase === 'lobby' ||
-              snapshot?.phase === 'training' ||
-              snapshot?.runStatus === 'paused' ||
-              snapshot?.runStatus === 'ready') && (
-              <button
-                type="button"
-                className="btn-subtle btn-xs"
-                onClick={() => {
-                  cancelActiveHold('Recalibrating...');
-                  setPracticeSuccesses(0);
-                  practicePeaksRef.current = [];
-                  setStep('calibrate');
-                }}
-              >
-                Recalibrate
-              </button>
-            )}
+        <div className="controller-tools">
+          {/* Always rendered so the bar keeps its height; only usable while no round is live */}
+          {inputMethod !== 'touch_fallback' && (
+            <button
+              type="button"
+              className="btn-subtle btn-xs"
+              disabled={!canRecalibrateNow}
+              onClick={() => {
+                cancelActiveHold('Recalibrating...');
+                setPracticeSuccesses(0);
+                practicePeaksRef.current = [];
+                setStep('calibrate');
+              }}
+            >
+              Recalibrate
+            </button>
+          )}
           <button
             type="button"
             className="btn-subtle btn-xs"
@@ -1404,33 +1511,34 @@ export const PlayView: React.FC = () => {
         </div>
       </header>
 
-      {/* Creature Mini-View with This Player's Limb Highlighted */}
-      {teamState && (
-        <div className="play-creature-wrap">
-          <CreatureCardCanvas
-            team={teamState}
-            effects={effectsRef.current}
-            focusLimbIndex={seat.limbIndex}
-            localFocusLimbHeld={held}
-            localFocusLimbProgress={progress}
-            isPaused={snapshot?.runStatus === 'paused'}
-            width={340}
-            height={142}
-          />
-        </div>
-      )}
+      {/* Row 2: creature mini-view with this player's limb highlighted, beside the assigned sweep.
+          The arrow tile is the stop/replay control for the looping demo. */}
+      <div className="controller-visual-row">
+        {teamState && (
+          <div className="play-creature-wrap">
+            <CreatureCardCanvas
+              team={teamState}
+              effects={effectsRef.current}
+              focusLimbIndex={myLimbIndex}
+              localFocusLimbHeld={held}
+              localFocusLimbProgress={progress}
+              isPaused={snapshot?.runStatus === 'paused'}
+              width={230}
+              height={130}
+            />
+          </div>
+        )}
+        <GestureDemoBadge
+          gestureId={seat.assignment.gestureId}
+          animate={animateDemo}
+          onToggleAnimate={() => setAnimateDemo((a) => !a)}
+          tile
+        />
+      </div>
 
-      {/* Persistent Assigned Gesture Arrow & Looping Demo Toggle */}
-      <GestureDemoBadge
-        gestureId={seat.assignment.gestureId}
-        animate={animateDemo}
-        onToggleAnimate={() => setAnimateDemo((a) => !a)}
-        compact
-      />
-
-      {/* Immediate Local & Server Feedback Banner */}
+      {/* Row 3: immediate local & server feedback. Fixed two-line height so the pad never jumps. */}
       <div
-        className={`status-banner ${
+        className={`status-banner status-banner-fixed ${
           !canSubmitLiveInput
             ? 'status-banner-warn'
             : statusKind === 'accepted'
@@ -1456,7 +1564,7 @@ export const PlayView: React.FC = () => {
         )}
       </div>
 
-      {/* Large Thumb-Accessible Hold-to-Paddle Control */}
+      {/* Row 4: large thumb-accessible hold-to-paddle control; takes all remaining height */}
       <div
         role="button"
         tabIndex={0}
@@ -1476,6 +1584,7 @@ export const PlayView: React.FC = () => {
         {statusKind === 'accepted' && canSubmitLiveInput && acceptedPopSeq > 0 && (
           <AcceptedPop key={acceptedPopSeq} seq={acceptedPopSeq} />
         )}
+        {!padDisabled && <SweepSteps stage={sweepStage} />}
         <div className="paddle-hold-title">
           {padDisabled
             ? snapshot?.runStatus === 'paused'
@@ -1484,16 +1593,14 @@ export const PlayView: React.FC = () => {
             : inputMethod === 'touch_fallback'
               ? held
                 ? 'Swipe Along Arrow'
-                : 'Hold & Swipe to Paddle'
+                : 'Press & Swipe to Paddle'
               : held
                 ? statusKind === 'accepted'
-                  ? 'Stroke Accepted ✓ Release!'
-                  : 'Sweep Now · Release to Return'
-                : 'Hold to Paddle'}
+                  ? 'Got It ✓ Release!'
+                  : 'Move, Then Release'
+                : 'Press & Hold'}
         </div>
-        <div className="paddle-hold-hint">
-          {GESTURE_SPECS[seat.assignment.gestureId].instruction} · Release while returning
-        </div>
+        <div className="paddle-hold-hint">{GESTURE_SPECS[seat.assignment.gestureId].instruction}</div>
         <div className="paddle-progress-track">
           <div
             className="paddle-progress-fill"

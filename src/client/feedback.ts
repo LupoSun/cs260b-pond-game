@@ -51,7 +51,16 @@ export class FeedbackController {
     }
   }
 
-  playTone(kind: 'accepted' | 'rejected' | 'collected' | 'countdown_tick' | 'go'): void {
+  playTone(
+    kind:
+      | 'accepted'
+      | 'rejected'
+      | 'collected'
+      | 'collected_big'
+      | 'collected_jackpot'
+      | 'countdown_tick'
+      | 'go',
+  ): void {
     if (this.muted || typeof window === 'undefined') return;
     try {
       const Ctx =
@@ -95,6 +104,26 @@ export class FeedbackController {
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
         osc.start(now);
         osc.stop(now + 0.19);
+      } else if (kind === 'collected_big') {
+        // Golden bug: a brighter two-note hop
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(783.99, now);
+        osc.frequency.setValueAtTime(1174.66, now + 0.09);
+        gain.gain.setValueAtTime(0.11, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.31);
+      } else if (kind === 'collected_jackpot') {
+        // Pond star: a rising four-note fanfare
+        osc.type = 'square';
+        [523.25, 659.25, 783.99, 1046.5].forEach((hz, i) => {
+          osc.frequency.setValueAtTime(hz, now + i * 0.085);
+        });
+        gain.gain.setValueAtTime(0.085, now);
+        gain.gain.setValueAtTime(0.085, now + 0.36);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+        osc.start(now);
+        osc.stop(now + 0.71);
       } else if (kind === 'countdown_tick') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(440, now);

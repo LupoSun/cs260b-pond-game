@@ -1,8 +1,16 @@
 # CS260B Shared-Body Pond Game — Implementation Specification
 
-Version: 0.1 · Prepared: 15 November 2026
+Version: 0.5 · Prepared: 15 November 2026 · Revised: 18 November 2026
 
 Status: implementation handoff; the game has not been implemented or validated on physical phones.
+
+Revision 0.2 records design decisions the project owner made after playtesting: a how-to-play page that opens the session, a fixed running order with unscored prep rounds before both games, dedicated discussion phases in place of "pause for discussion", a leaderboard phase, a 7-minute default for both games, a straight race that ends only when the last creature finishes or time is up, and synchrony-based speed in the straight swim. Where this revision contradicts older wording elsewhere in the document, this revision wins.
+
+Revision 0.3 records further decisions from the same owner's second playtest: creatures carry each player's nickname on their limb instead of a limb number, the training display reminds players to lock screen rotation in place of the join panel, the discussion before Game 1 has two questions, the discussion after Game 1 ties the experience to the Won et al. reading, and gestures are assigned at random (Section 7.2).
+
+Revision 0.4 records decisions from the owner's third round of feedback: the three beats of a stroke are named **Press, Move, Release** on every surface and shown prominently on the phone and the training display; Game 2 Prep has items to collect; items come in three kinds with different points and different sizes of celebration; Game 2 has a large live scoreboard; optional background music is switched globally from Mission Control; iPhone's Shake to Undo is mitigated as far as a web page can; and creatures gain and lose limbs dynamically as players leave and return. The last item replaces the earlier rule that a disconnect never removes a limb, and with it the unqualified forms of two statements in `AGENTS.md` ("a player keeps the same … limb … throughout the activity" and "do not give a team more power because a participant disconnects"); Section 10.1 gives the rule that now applies.
+
+Revision 0.5 records the owner's session plan and three related decisions. (1) The activity is planned as eight timed sections totalling 25 minutes (Section 3.1.1), and every section has a **section clock** that starts when the phase is loaded, counts down from the planned time, and turns red and runs negative when the section overruns. **Game 1 and Game 2 are the only phases the clock ends**: a scored game stops when its clock reaches zero. Every other section, including both prep rounds, is only paced by the clock and ends when the facilitator moves on. The clock starts at load, not at Start, because the owner needs it to keep the class on schedule. This replaces "both games default to 7 minutes" from revision 0.2: Game 1 now has 4 minutes and Game 2 has 5, each counted from load. (2) The background music is recorded loops chosen from Freesound under Creative Commons 0 instead of a tune synthesized in the browser (Section 8.1). (3) The phone no longer shows a tip about switching Shake to Undo off; the reload after joining is the whole mitigation (Section 6.1).
 
 ## 1. Read this first
 
@@ -39,15 +47,20 @@ No accounts, grades, or formal human-subjects data collection are required.
 | Participants | At most 30 players across teams (up to 6 players per team). Facilitator and display connections do not consume player seats. |
 | Team body | One creature per team, with its number of controllable limbs determined dynamically by how many participants have joined that creature (one limb per joined participant). |
 | Joining | One QR code; players enter a facilitator-assigned team number. Never silently place a player into another team. |
-| Assignment | Each participant keeps the same limb and assigned motion from onboarding to the end. |
+| Assignment | Each participant keeps the same team and assigned motion from onboarding to the end. The limb's position and number on the creature can change when a teammate's limb is released or returns (revision 0.4). |
 | Input | Easy directional movements, including left-to-right, right-to-left, and diagonal sweeps. |
 | Seated use | Keep movements compact and below approximately 50 cm. Small comfortable movements are the normal case. |
 | Stroke cycle | Press and hold during the working movement; release while returning to the starting position. |
-| Training | A checkerboard/grid of team cards on the classroom display. Each card contains its team's creature and live limb feedback. |
+| Explanation | A how-to-play page on the classroom display opens the session. |
+| Training | A checkerboard/grid of team cards on the classroom display. Each card contains its team's creature and live limb feedback, including sweeps a player makes during the phone's own practice step. A how-to panel sits on the left of the grid with the three beats of a stroke (Press, Move, Release) and a reminder to lock screen rotation; the join QR is one tap away for latecomers. |
 | Recognition feedback | A successful movement causes visible feedback, such as a green highlight, and a small forward-swimming response. |
-| First game | Straight swimming race: reach the finish line first. |
+| First game | Straight swimming race to a finish line. A creature moves fast only when its limbs stroke at the same time: the more limbs in sync the faster, and unsynchronized strokes are penalized. The race does not stop when the first creature finishes; it ends when the last creature finishes or its section clock reaches zero. |
 | Optional second game | Free-water steering and item collection, if time permits. |
-| Collection | An item disappears on contact and awards the collecting team a point. |
+| Prep rounds | Each game is preceded by an unscored prep round: lane practice before Game 1, steering practice before Game 2. |
+| Discussion | Dedicated discussion phases, not a pause embedded in another phase: one between Game 1 Prep and Game 1 asking whether students have figured out what makes them move fast, and one between Game 1 and Game 2 Prep. |
+| Leaderboard | A leaderboard phase shows the competition statistics of the session. |
+| Game length | Game 1 has 4 minutes and Game 2 has 5, counted from the moment the phase is loaded (revision 0.5, Section 3.1.1). The two scored games end when that time runs out. No other phase ends on time. |
+| Collection | An item disappears on contact and awards the collecting team that item's points. Items come in three kinds with different values. |
 | Facilitator | Private Mission Control to operate phases, pause/resume, and reset specific state. |
 | Network modes | Live limb updates and a lower-traffic completed-stroke mode; facilitator chooses a common mode between active rounds. |
 | Visual direction | Animated American comic / pop-art pond: thick black ink outlines, halftone dot fills, speed-line and starburst accents, chunky outlined lettering, and a saturated blue, pink, yellow, orange, and red palette. This replaces the earlier painted 2.5D direction. |
@@ -59,15 +72,17 @@ No accounts, grades, or formal human-subjects data collection are required.
 
 - Universal minimum and maximum team size (`4–6` by default, editable `1–6` in Mission Control); teams are not pre-created manually, and instead spawn dynamically and size their paddles automatically according to who has joined within the configured `[minTeamSize, maxTeamSize]` range (up to the 30-player session cap).
 - Mostly overhead world view with mild illustrative depth; game geometry remains two-dimensional.
-- Training is untimed by default, with a visible elapsed timer and facilitator-controlled ending.
+- Training, like every section, shows the section clock and ends only when the facilitator moves on.
 - Three-second shared countdown before either scored game.
-- Straight race: 90-second limit; tune course length so a practiced team can finish in approximately 45–75 seconds.
-- Free-water game: 90 seconds, editable to 60 seconds.
-- Brief discussion after training and before the first race.
+- A section's planned time is editable from 10 seconds to 60 minutes at any moment. In a live scored game this moves the moment the game ends; anywhere else it changes only the clock. Course length is tuned so a team stroking in sync finishes the straight race in approximately 45–75 seconds. In synthetic runs poorly coordinated teams needed about 2:30–3:00 of play, which is close to what a 4-minute section leaves after staging and the countdown, so some teams may not finish; they are ranked by distance.
+- Game 1 Prep: unscored lane practice in which creatures lap the course instead of finishing, planned at 3 minutes. Game 2 Prep: unscored steering with items to chase, planned at 3 minutes. Both run until the facilitator ends them or loads the next phase; their clocks never end them.
+- Synchrony in the straight swim (Section 10.3): strokes from different limbs of one team accepted within 350 ms form a sync group; the propulsion multiplier rises linearly from 0.35 for a lone stroke to 1.5 when every joined limb is in the group. These three numbers are untested on physical phones and must be tuned in rehearsal.
+- Leaderboard standings use placement points (Section 10.5).
+- Discussion prompts follow the owner's direction (Section 5.4), but the exact sentences are draft wording until the owner confirms them (Section 16).
 - All team creatures can overlap in free water; there are no creature-to-creature collisions.
-- Equal value for all collectible items.
+- ~~Equal value for all collectible items.~~ Superseded in revision 0.4: items have different values (Section 10.4).
 - Primary gesture candidate: short physical sweeps, recognized locally from motion signals. Directional tilts are an explicit development fallback, not an automatic replacement.
-- Both network modes award exactly the same fixed propulsion for the same accepted stroke. The difference is how often intermediate limb animation updates are sent.
+- Both network modes award exactly the same propulsion for the same accepted strokes. The difference is how often intermediate limb animation updates are sent.
 
 ## 2. System surfaces and roles
 
@@ -88,17 +103,51 @@ The classroom display must not expose private controls or authentication credent
 ### 3.1 Normal classroom sequence
 
 1. Facilitator sets the universal minimum and maximum team size on Mission Control (default 4–6); team count and per-team sizes configure automatically as players join.
-2. Classroom display presents the join QR code and a readable short URL; in the lobby, only teams that have joined are shown, and their cards dynamically resize and relayout as more teams join.
-3. Players enter their assigned team number, receive a limb, enable motion access, and complete calibration.
-4. Facilitator opens training. The display changes to the team-card grid.
-5. Players practice their own movements; recognized strokes animate the corresponding limbs and generate green success feedback.
-6. Facilitator pauses training for discussion.
-7. Facilitator loads the straight race, starts the countdown, and runs the race.
-8. Display shows race results.
-9. If time permits, facilitator loads free water, enables a short unscored steering practice, then starts scored collection.
-10. Display shows collection results; facilitator can return to training or end the activity.
+2. **Explanation.** A fresh session opens on the how-to-play page, which carries the join QR code and a readable short URL (Section 5.1). Hiding it reveals the lobby, where only teams that have joined are shown and their cards resize as more teams join.
+3. Players enter their assigned team number, receive a limb, enable motion access, complete calibration, and begin their three practice sweeps.
+4. **Training.** Facilitator loads and starts training. The display shows the Press / Move / Release how-to and a lock-your-rotation reminder on the left, and the team-card grid beside it. Practice sweeps, including those made in the phone's practice step, animate the corresponding limbs and generate green success feedback.
+5. **Game 1 Prep.** Unscored lane practice. Teams swim laps and experiment; the synchrony rule is not announced.
+6. **Discussion: What makes you fast?** A dedicated phase asking whether students have figured out what makes them move fast.
+7. **Game 1.** Facilitator loads the straight race, starts the countdown, and runs the race. Display shows race results.
+8. **Discussion: After Game 1.** A dedicated phase, with the Game 1 placements alongside the prompts.
+9. **Game 2 Prep.** Short unscored steering practice in free water.
+10. **Game 2.** Scored collection. Display shows collection results.
+11. **Leaderboard.** Session standings and statistics (Section 10.5).
 
-Indicative allocation: joining 2 minutes; training 2 minutes; discussion 1–2 minutes; straight race 1–1.5 minutes; optional steering familiarization 15–20 seconds and collection 1–1.5 minutes. Timing remains under facilitator control.
+Mission Control lists these steps in this order. The order is a guide, not a lock: the facilitator can load any step at any time, repeat one, or skip the optional second game.
+
+#### 3.1.1 Session plan and the section clock
+
+The owner's plan (**confirmed requirement**, revision 0.5) divides the activity into eight sections totalling 25 minutes. These are the default planned times:
+
+| # | Section | Phase | Planned time |
+| --- | --- | --- | --- |
+| 1 | Explaining and joining | Lobby, with the how-to-play guide | 4 min |
+| 2 | Learning and training | Training | 2 min |
+| 3 | Game 1 Prep | Straight, unscored | 3 min |
+| 4 | Discussion before Game 1 | Discussion | 2 min |
+| 5 | Game 1 | Straight, scored | 4 min |
+| 6 | Discussion after Game 1 | Discussion | 2 min |
+| 7 | Game 2 Prep | Free water, unscored | 3 min |
+| 8 | Game 2 | Free water, scored | 5 min |
+
+The leaderboard is not a timed section and shows no clock.
+
+The **section clock** (confirmed requirement):
+
+- It is shown on the classroom display and in Mission Control, and counts down from the section's planned time.
+- When the planned time runs out it turns red and keeps counting into the minus (`-0:01`, `-0:02`, …). An "Over" tag and the minus sign carry the state for viewers who cannot rely on colour.
+- **At zero it ends Game 1 and Game 2, and nothing else** (confirmed requirement). A scored game that is running when its clock reaches zero finishes at once with the result `time_up`: Game 1 ranks unfinished creatures by distance, Game 2 ranks by score. In every other section (joining, training, both prep rounds, both discussions) reaching zero does not end, pause, lock, or change anything: the clock goes red and the facilitator moves on when they choose.
+- **It starts when the phase is loaded** (confirmed requirement), from the full planned time. Time spent staging before **Start**, and the 3-second countdown, come out of a game's time. This is deliberate: the clock exists to keep the class on schedule.
+- It measures class time, so it is not frozen by pausing a round, and resetting a round within the same section does not restart it.
+- The joining section has no load command, so its clock waits at the full time and starts when the first player joins or when the facilitator presses **Start Clock**, whichever comes first.
+- Mission Control can change the planned time of the section on screen and can restart the clock. In a live scored game either action moves the moment the game ends, so a facilitator can give a game more time. Planned times are facilitator settings: they survive a session clear and return to the defaults when the server restarts.
+- Engineering defaults for the edges of the time-up rule:
+  - A scored game that is **started after its section time was already used up** is not ended the instant it starts. It runs without an automatic end, Mission Control says so when it starts, and restarting the clock or lengthening the planned time brings the automatic end back. The same applies to a round reset after time ran out.
+  - A scored game that is **paused when its clock reaches zero** stays paused and ends as soon as it is resumed.
+  - After a game ends on time the clock keeps counting into the minus while results are on screen.
+
+Round endings in full: Game 1 ends when every participating creature has finished, when its clock reaches zero, or when the facilitator presses **End Round**. Game 2 ends when its clock reaches zero or on **End Round**. Game 1 Prep and Game 2 Prep have no natural end and stop only on **End Round** or when another phase is loaded. A scored round still has to be ended or paused before another phase can be loaded.
 
 ### 3.2 Keep three kinds of mode separate
 
@@ -106,24 +155,27 @@ Do not use one overloaded `mode` field for unrelated concepts.
 
 | Concept | Values |
 | --- | --- |
-| Activity phase | `lobby`, `training`, `straight`, `freewater` |
+| Activity phase | `lobby`, `training`, `straight`, `freewater`, `discussion`, `leaderboard` |
 | Run status | `ready`, `countdown`, `running`, `paused`, `finished` |
 | Network presentation mode | `continuous`, `stroke_events` |
 
 Additionally, record an explicit input method per player: `physical_sweep`, `tilt`, or `touch_fallback`. Input method is independent of network mode.
 
-Discussion uses a paused activity, not an additional simulation phase. Results are the view of a finished scored round. Free-water practice is the free-water phase with scoring disabled.
+Discussion is its own activity phase with a topic (`before_game1` or `after_game1`), not a paused activity; ordinary pause remains available inside training and rounds. Results are the view of a finished scored round, and the leaderboard is its own phase. Each prep round is its game's phase with scoring disabled: Game 1 Prep is `straight` unscored, Game 2 Prep is `freewater` unscored. The how-to-play page is an overlay on the display rather than a phase, so it can be shown over the lobby or any staged, paused, or finished phase.
 
 ### 3.3 State-transition rules
 
 - Loading a phase stages it in `ready`. It must not silently start a race.
+- `discussion` and `leaderboard` are display-only: loading one shows it immediately, there is nothing to start, pause, or end, no input is accepted, and the facilitator leaves by loading another phase. A discussion shows its elapsed time.
+- Unscored prep rounds start without a countdown and do not lock admission.
+- Loading any phase hides the how-to-play page, so the display shows what was just loaded.
 - Only authenticated facilitator commands may load, start, pause, resume, reset, or finish a phase.
 - Require pausing or finishing an active scored round before loading a different phase.
 - Training starts explicitly; it can be paused and resumed without clearing learned mappings or calibration.
 - A scored start creates a server-timed countdown, then a common start instant.
 - During countdown, input may update a non-propulsive preview but cannot generate progress or points.
-- Pausing freezes simulation, active-time clocks, positions, scores, and item timers. Clear all in-progress gestures; players must release and press again after resuming.
-- Resuming preserves positions, scores, item state, and remaining active time.
+- Pausing freezes simulation, the round's active time, positions, scores, and item timers. The section clock keeps running (Section 3.1.1). Clear all in-progress gestures; players must release and press again after resuming.
+- Resuming preserves positions, scores, item state, and the round's active time.
 - Returning to training preserves player identities, limb assignments, motion assignments, and valid calibration.
 - Changing network mode is allowed in `ready` or `paused` and applies to everyone. Clear unfinished gestures and offer brief practice before restarting play.
 - Ending or resetting a round invalidates all old input events using an updated round identifier.
@@ -135,16 +187,16 @@ Mission Control should share the comic ink, lettering, and palette of the pond a
 
 ### 4.1 Primary controls
 
-1. Current activity phase, run status, and active/remaining time.
-2. Phase picker: Training / Straight swim / Free water; explicit **Load phase** action.
+1. Current activity phase, run status, the section clock (time left or time over), and the round's active time.
+2. Phase picker listing the session in running order (Explanation, Training, Game 1 Prep, Discussion before Game 1, Game 1, Discussion after Game 1, Game 2 Prep, Game 2, Leaderboard); explicit **Load phase** action.
 3. Contextual **Start**, **Pause**, and **Resume** actions.
-4. **Pause for discussion**, preserving the current simulation state.
-5. **End round** to produce results without waiting for the timer.
+4. No "pause for discussion": discussion is loaded from the phase picker like any other step.
+5. **End round** to produce results early. For the prep rounds this is the only way a round ends; a scored game also ends when its clock reaches zero.
 6. Network mode selector with concise explanations of live animation versus completed-stroke updates.
-7. Round duration controls while staged or paused; do not retroactively change an active round without an explicit host action.
+7. Section clock controls: change the planned time of the section on screen and restart its clock, at any time. In a live scored game these move the moment the game ends; they never start or reset a round.
 8. **Open classroom display** in another tab/window.
 9. Join QR code, session URL, and admission lock.
-10. **Show guide / Hide guide** toggle for the how-to-play guide on the classroom display (Section 5.1).
+10. **Show guide / Hide guide** toggle for the how-to-play guide on the classroom display (Section 5.1), in addition to the Explanation step in the phase picker.
 11. Access to the scoped reset controls in Section 9.
 
 Training is the main preflight phase. A facilitator should be able to tell which player needs help without watching every phone.
@@ -169,7 +221,7 @@ Network diagnostics may show measured round-trip time and delivery gaps. Do not 
 - Teams spawn automatically when the first player joins a valid assigned team number (`1..15`), and each creature's limb count configures automatically to its joined player count (`1..maxTeamSize`).
 - The total joined player count across the session must not exceed 30.
 - Existing players rejoining do not consume a new seat or add an extra limb.
-- Lock new admission before scored play so creature limb topology stays fixed during the round; reconnection to an existing seat remains possible.
+- Lock new admission before scored play so no new player joins mid-round; reconnection to an existing seat remains possible. A creature's limb count can still change during a round when a disconnected player's limb is released or a returning player's limb grows back (Section 10.1).
 - Warn before starting a scored round if any joined team is below `minTeamSize`, or has disconnected or uncalibrated players. A facilitator can adjust `minTeamSize` or explicitly override the warning; record overrides in the session event log.
 - Never rebalance teams, reassign limbs, or change gestures automatically to satisfy readiness.
 
@@ -182,9 +234,10 @@ Design for a 16:9 classroom screen, especially 1920 × 1080, while remaining usa
 - In both the lobby and training views, dynamically show **only** teams that have at least one joined player (`joinedCount >= 1`). Before any team joins in the lobby, center the Join QR hero panel.
 - Dynamically resize and relayout team cards and creature canvases according to how many teams have joined (`1×1` for 1 team, `2×1` for 2, `3×1` for 3, `2×2` for 4, `3×2` for 5–6, `4×2` for 7–8, etc.).
 - Maintain deterministic ascending `teamNumber` order as teams join and throughout training.
-- A compact public header shows phase, timer, and pause/countdown status.
-- Admission QR can be expanded by the facilitator; keep it away from active creature visuals.
-- A facilitator-toggled how-to-play guide can cover the display, typically at the beginning. It shows the join QR and URL, the nickname and team-number step, the motion-permission reminder (Safari on iPhone, Chrome on Android), the six sweeps with the hold–sweep–release rule, and the shared-creature idea. It is presentation only, is off by default, cannot be turned on during a countdown or running phase, hides automatically when a phase starts or resumes, and is cleared by **Clear entire session**. The display itself has no control to show or hide it.
+- A compact public header shows phase, the section clock, and pause/countdown status.
+- In training, teams have already joined, so the panel to the left of the card grid is a how-to rather than the join panel. Its main content is the three beats of every stroke in large type, **1 Press** and hold the big button, **2 Move** the phone along your arrow, **3 Release** then bring the phone back, with the highlight walking through them in order. Below it is the rotation-lock reminder: where to find the control on iPhone (Control Center) and Android (Auto-rotate in quick settings). It returns every time training is loaded, and the display can hide and re-show it. If training is loaded before any team has joined, the join panel is shown instead.
+- Outside the lobby, training included, the join QR is an expandable corner drawer for latecomers, kept away from active creature visuals and unavailable while admission is locked.
+- A how-to-play guide covers the display at the beginning. It shows the join QR and URL, the nickname and team-number step, the motion-permission reminder (Safari on iPhone, Chrome on Android), a reminder to lock screen rotation, the six sweeps with the Press / Move / Release beats, and the shared-creature idea. It does not state the synchrony rule. It is presentation only, is showing when a session is created or cleared, can be toggled by the facilitator, cannot be turned on during a countdown or running phase, and hides automatically when a phase is loaded, starts, or resumes. The display itself has no control to show or hide it.
 - No administrative reset, calibration, score-editing, or test-input buttons on the real projected view.
 
 ### 5.2 Each training card
@@ -193,7 +246,7 @@ Each card contains:
 
 1. Large team number plus identity color/accessory.
 2. The team's creature, with its controllable limbs dynamically matching the players who have joined that team.
-3. Legible limb IDs matching the IDs on phones.
+3. A legible label on every limb showing its player's nickname, so each person can find their own paddle (label rules in Section 11.2).
 4. A compact status indicator for each limb: connected / calibrated / first successful stroke.
 5. A brief textual acknowledgment of the latest event, such as **Limb 3 · stroke recognized**.
 
@@ -210,11 +263,19 @@ During training, anchor the creature within its card. Successful strokes can cau
 | Server accepted | Green success cue and checkmark; optional haptic | Brief green highlight on that limb, small splash/nudge, text acknowledgment |
 | Incomplete/wrong movement | Brief neutral/amber guidance after release; no propulsion | No green success; optionally show a quiet status in Mission Control |
 | Returning while released | Reset cue; no input recognition | Limb returns to preparation pose without generating another stroke |
-| Paused/disconnected | Clear status; disable stroke submission | Freeze/neutralize the limb; retain its identity and seat |
+| Paused/disconnected | Clear status; disable stroke submission | Freeze/neutralize the limb; retain its identity and seat. A disconnected limb is shown as offline for the grace period, then removed (Section 10.1) |
 
 Use a brief, localized green glow rather than repeated full-screen flashes. Approximately 200–350 ms is an initial visual timing to test, not a measured requirement. Preserve a checkmark/readiness indicator after the glow fades so success remains legible.
 
 Do not make the whole card green when only one player succeeds. A facilitator must still be able to identify the other players who have not succeeded.
+
+### 5.4 Discussion and leaderboard displays
+
+A discussion fills the display with one panel: which discussion it is, a short title, and at most three questions readable from the back of the room. The prompts before Game 1 must not give away the synchrony rule; the point is for students to say it. The discussion before Game 1 has two questions: whether the team has worked out what makes the creature surge and what makes it crawl, and what it will do differently in the race. The discussion after Game 1 relates the experience to the reading (Won et al., 2015 [R1]): when the unfamiliar sweep-to-paddle mapping began to feel like one's own limb, how players changed their movement once they knew what the mapping rewarded, and how sharing one body across a team differs from one person learning a novel body. It also lists each team's Game 1 placement, time or distance, and sync share. Prompts that mention the paper must not attribute to it more than it reports.
+
+The leaderboard shows the combined standings (Section 10.5), each team's Game 1 and Game 2 lines, and a few session highlights (fastest finish, best team sync, biggest harvest, total strokes landed). A highlight shared by several teams names all of them. Before any scored game has finished it says so instead of showing an empty table.
+
+Neither display offers any control.
 
 ## 6. Phone controller and onboarding
 
@@ -226,11 +287,12 @@ The QR code opens the public participant URL and identifies the session. The pla
 - Explain out-of-range, full (`>= maxTeamSize`), or locked teams clearly.
 - Never silently redirect someone to another team.
 - Allocate a seat atomically so two simultaneous joins cannot take the same limb.
-- Require a short display name or nickname (engineering default: at most 16 characters after trimming; control and invisible characters removed). Names need not be unique; the limb number still disambiguates.
+- Require a short display name or nickname (engineering default: at most 16 characters after trimming; control and invisible characters removed). Names need not be unique; the limb number still disambiguates. On creature limb labels, teammates who chose the same nickname get their limb number appended (**Sam 1**, **Sam 2**).
 - Show the nickname with the limb on the classroom display and Mission Control so teammates and the facilitator can tell who controls which limb.
 - Show an unmistakable confirmation: **Sam · Team 4 · Limb 2**, matching classroom identity.
 - Give a session-scoped persistent player identity and resume token, independent of the transient socket ID.
-- A page refresh/reconnect should restore that identity and its assignments. A second tab must not create a duplicate active controller for the same seat.
+- A page refresh/reconnect should restore that identity and its assignments. A second tab must not create a duplicate active controller for the same seat. A player away for longer than the limb grace period keeps the identity but gives up the limb until they return (Section 10.1).
+- **Shake to Undo on iPhone.** iOS offers "Undo Typing" when the phone is shaken, and a web page has no way to turn that off; the only guaranteed fix is the device setting (Settings → Accessibility → Touch → Shake to Undo). As mitigation, the page reloads itself once on iPhone and iPad immediately after a successful join, so the document holding the typed name and team number is discarded and nothing typed remains to be undone; the seat returns through the resume credential. The reload happens only when that credential is confirmed saved. This mitigation is **untested on a physical iPhone** and must be checked in Gate A. The phone does not show a tip about the setting (removed in revision 0.5): players are not expected to change an accessibility setting for a classroom game, so the reload is the whole mitigation.
 
 The nickname is self-chosen, kept only in the in-memory session, preserved across reconnects and scoped resets, and discarded by **Clear entire session**. It does not have to be the participant's real name. No university account or email is necessary.
 
@@ -239,11 +301,11 @@ The nickname is self-chosen, kept only in the in-memory session, preserved acros
 1. Confirm team and limb.
 2. Tap **Enable motion**.
 3. Run a short capability check and show a comprehensible pass/failure result.
-4. Show how to hold the phone in portrait orientation, screen facing the player at a comfortable angle.
+4. Show how to hold the phone in portrait orientation, screen facing the player at a comfortable angle, and remind the player to lock screen rotation so a sweep cannot turn the page sideways. The page cannot lock rotation itself in the supported browsers; this is an instruction to the player.
 5. Capture a brief stationary reference for calibration.
 6. Show an animated demonstration of that player's assigned movement.
-7. Have the player perform approximately three practice attempts, with useful feedback.
-8. Enter the controller; maintain access to the same motion demonstration.
+7. Have the player perform approximately three practice attempts, with useful feedback. While training is running these attempts are also sent to the server, so they count as accepted practice strokes and animate the limb on the classroom grid; outside a running training phase they stay local to the phone.
+8. Enter the controller; maintain access to the same motion demonstration. A player who has completed the three practice attempts does not have to press the button: as soon as the facilitator loads any step past training, that phone moves into the controller by itself, so nobody is left behind for forgetting. A player with fewer than three stays in practice, is told the class has moved on, and can skip ahead.
 
 Calibration should adjust recognition to a comfortable movement, not force the person to reach a particular distance. The 50 cm boundary is a participant instruction, not a measured coordinate threshold.
 
@@ -254,12 +316,14 @@ Keep these elements visible without scrolling:
 - Team number/color/accessory and limb ID.
 - Small creature view with that person's limb highlighted.
 - Assigned directional arrow and looping demonstration, with a way to stop/replay the demonstration.
-- Large thumb-accessible **Hold to paddle** button.
+- Large thumb-accessible pad carrying the three beats **Press, Move, Release**, with the beat the player is on lit: Press while idle, Move while held, Release once the stroke is accepted.
 - Current recognition status and simple local feedback.
 - Paused/disconnected/reconnecting status.
 - Optional sound/haptics preferences where supported.
 
 The same assigned movement remains visible throughout all phases. Essential state must be conveyed through visuals and text, including on silent iPhones.
+
+One-screen rule (**confirmed requirement**): a player must never have to scroll while paddling. The controller is four rows sized to the visible viewport: identity and preferences; the creature view beside the assigned sweep (the sweep tile is also the stop/replay control); a status line that always reserves two lines so a longer message cannot move the pad; and the hold pad, which takes all remaining height and stays anchored to the bottom edge. The onboarding practice step follows the same rule, so the pad and the **Enter Controller** button are visible together. Both screens suppress pull-to-refresh. A phone turned sideways gets the pad on the right half and the other rows stacked on the left. Only a viewport too short for the minimum sizes (roughly below 450 px tall for the controller and 540 px for the practice step, in portrait) falls back to scrolling rather than clipping content. A layout rule written for one surface must be scoped to it; the classroom display's card sizing must not reach the phone.
 
 Use normal touch contact, not pressure or force-touch sensing. Holding the control must not scroll the page, select text, open a long-press menu, or activate navigation gestures within the control area.
 
@@ -302,7 +366,9 @@ Keep gesture direction separate from which side of the creature the limb occupie
 
 Normal motion should fit roughly within 10–20 cm of comfortable seated space, with approximately 50 cm as an outer instructional boundary. Do not require full arm extension. Test whether the proposed vocabulary is equally understandable and recognizable on both target platforms.
 
-Assignments are made once. Recalibration changes the recognition reference/thresholds, not the gesture identity or assigned limb.
+Assignment is random (**confirmed requirement**, revision 0.3). When a team is created the server draws that team's own random ordering of the vocabulary, and each limb takes the next gesture from it as players join. Teammates therefore get different sweeps (the vocabulary has six entries and a team has at most six limbs), and a gesture cannot be predicted from the team number or the order people joined in. The earlier rule derived the gesture from team number plus join order, which gave the first player of a given team the same sweep in every session.
+
+Assignments are made once. Recalibration changes the recognition reference/thresholds, not the gesture identity or assigned limb. A refresh or reconnect restores the same seat and so the same gesture; a new draw happens only for a new seat, for example after the facilitator clears the session.
 
 ### 7.3 Press–stroke–release state machine
 
@@ -376,6 +442,29 @@ Haptics are optional enhancement, not a device eligibility requirement.
 - Do not depend on hidden-switch tricks or programmatic switch clicking as the iPhone feedback implementation.
 - No native app or native wrapper is required for the first classroom version.
 
+### 8.1 Background music
+
+Optional party-game style background music (confirmed requirement, revision 0.4; redone with recorded tracks in revision 0.5).
+
+- One global switch in Mission Control turns it on or off for the session. It is off by default and is not reset by clearing the session.
+- It plays from the classroom display only. Phones stay silent: thirty copies would not stay in time with each other.
+- The music is four recorded files in `public/music/`, all published on Freesound under Creative Commons 0 and recorded in `public/music/CREDITS.txt`:
+
+  | File | Plays | Source |
+  | --- | --- | --- |
+  | `lobby.mp3` | Joining, staging before a round, results after a round, and the leaderboard (looped) | "Airport Lounge" by code_box |
+  | `practice.mp3` | Training and both prep rounds while they run (looped) | "Shaky Platforms" by code_box |
+  | `game.mp3` | Game 1 and Game 2 from the countdown until the round ends (looped) | "Wonky Ska" by code_box |
+  | `fanfare.mp3` | Once, when the leaderboard appears | "Tadaa.wav" by Exchanger |
+
+- Discussions are silent so the room can talk.
+- Use only audio whose licence allows redistribution in this repository, and record its source. Do not ship or imitate the soundtrack of an existing game.
+- A track is replaced by putting a file with the same name in `public/music/`. Loudness is balanced automatically when a track loads, and encoder padding at the ends of a loop is skipped so the loop does not hiccup.
+- A track that fails to load stays silent and nothing else is affected. Nothing is downloaded until music is switched on.
+- **The selection is unvalidated by ear.** The tracks were chosen from their Freesound download counts, ratings, and descriptions, and measured (tempo, whole-bar length, level, a clean join at the loop point), but nobody has listened to them in a classroom. Whether they suit the room is for the owner to judge.
+- Browsers block audio until the page has been clicked. A display that is waiting for that click shows a button saying so; the display's own Sound button also mutes the music locally.
+- Music is presentation only and never affects game state, and nothing essential is communicated by it.
+
 Suggested feedback:
 
 | Event | Required feedback | Optional enhancement |
@@ -385,7 +474,7 @@ Suggested feedback:
 | Local recognition | Immediate labeled acknowledgment | Brief pulse after recognition has latched |
 | Server acceptance | Green check/highlight | Short sound if enabled |
 | Wrong/incomplete attempt | Clear, non-punitive text after release | Quiet optional sound |
-| Team item collection | Authoritative score update and item pop | Shared display sound; avoid vibrating every player mid-stroke |
+| Team item collection | Authoritative score update and an item pop sized to the item's value | Shared display sound that grows with the item's value; avoid vibrating every player mid-stroke |
 
 Continuous buzzing is excluded. Vibration can be sensed by motion sensors [R4]; either suppress press haptics during capture or provide a tested settling interval. Do not feed the vibration transient into the recognizer. Provide a mute control and honor reduced-motion preferences.
 
@@ -410,26 +499,27 @@ Rules:
 - Individual fixes can occur during training. Require pausing before a reset/recalibration that affects a scored round.
 - A reset round returns to `ready`; it does not restart the clock immediately.
 - Clear-session requires an explicit, clearly described confirmation because all players must rejoin.
-- A network disconnect never changes team capacity, reallocates that player's limb, or grants the remaining players extra power.
+- A network disconnect shorter than the limb grace period (Section 10.1) never changes team capacity, reallocates that player's limb, or grants the remaining players extra power. A longer one releases the limb.
 - On pause, resume, reconnection, mode change, or reset, require a fresh press before accepting a new gesture.
 - Deduplicate facilitator commands so an acknowledged retry cannot accidentally reset twice.
+- The leaderboard keeps the most recently completed run of each scored game. Loading other phases or resetting a round leaves it in place; finishing that game again replaces it; a round ended before its countdown finished records nothing. Only **Clear entire session** removes it.
 
 ## 10. Creature movement and game rules
 
 ### 10.1 Shared stroke semantics
 
-**Implementation default:** a validated, server-accepted completed stroke produces one fixed propulsion impulse. Intermediate movement drives limb animation, not a second source of propulsion.
+A validated, server-accepted completed stroke is the only source of propulsion. In free water it produces one fixed impulse (**implementation default**). In the straight swim its size depends on how many of the team's limbs stroked together (Section 10.3, **confirmed requirement**). Intermediate movement drives limb animation, not a second source of propulsion.
 
-This deliberately keeps both network presentation modes equivalent:
+Because propulsion depends only on which strokes the server accepted and when, both network presentation modes stay equivalent:
 
 - `continuous`: intermediate limb/progress updates plus the completed-stroke event.
 - `stroke_events`: completed-stroke events and an animated stroke on receipt, without intermediate updates.
 
-Do not award propulsion once from streamed progress and again from stroke completion. Network frame count, sample rate, phone brand, gesture force, and haptic availability must not increase propulsion.
+Do not award propulsion once from streamed progress and again from stroke completion. Network frame count, sample rate, phone brand, gesture force, and haptic availability must not increase propulsion. Synchrony is judged from server acceptance times, never from a phone's clock.
 
 ### 10.2 Dynamic limb layout and team-size normalization
 
-Each creature's controllable limb count `N` equals the number of players who have joined that team (`1..6`, starting at `0` in the lobby before anyone joins):
+Each creature's controllable limb count `N` equals the number of players currently seated on that team (`1..6`, starting at `0` in the lobby before anyone joins); see "Dynamic limbs" below for what happens on a disconnect:
 
 | Joined players (`N`) | Dynamic symmetric layout |
 | --- | --- |
@@ -444,11 +534,17 @@ Assign stable limb IDs and motion assignments on join (`Limb 1 .. Limb N`) and m
 
 Let `N` be the number of joined limbs on that creature (`team.limbCount`):
 
-- Each accepted stroke contributes forward impulse proportional to `1/N`.
+- Each accepted stroke contributes forward impulse proportional to `1/N` (scaled by the sync multiplier in the straight swim).
 - For turning, normalize the total capacity of the left and right banks equally. Center-rear limbs add forward propulsion without a turning bias.
-- A complete stroke cycle from every joined limb produces comparable total forward impulse regardless of whether a creature has 1, 2, 3, 4, 5, or 6 players.
+- A complete stroke cycle from every joined limb produces comparable total forward impulse regardless of whether a creature has 1, 2, 3, 4, 5, or 6 players. In the straight swim this holds for a fully synchronized cycle.
 - Equal left-bank and right-bank participation cancels turning across all symmetric layouts (including odd-sized layouts with a center-rear tail).
-- Disconnection does not remove that player's limb, reduce `N`, or inflate the power of remaining players.
+- **Dynamic limbs** (confirmed requirement, revision 0.4, replacing "disconnection does not remove that player's limb"): a creature has exactly one limb per player currently seated on it.
+  - A disconnect starts a grace period (engineering default 5 seconds). During it the limb stays, shown as offline, `N` is unchanged, and nobody's power changes, so a page refresh or a network blip never alters the creature.
+  - After the grace period the limb is released: it leaves the creature, the remaining limbs are renumbered in join order, and `N` shrinks. From then on the creature behaves exactly like a team that joined at that size. This is the owner's decision; it means a team no longer carries dead weight for someone who left, and it also means a departure makes the remaining players' strokes each worth more.
+  - The player's identity, team, gesture, and calibration are kept. When the same phone reconnects, the limb grows back in its old place among its teammates (limbs are ordered by join order) if the team and the session still have room. If the team filled up meanwhile, the old seat is dropped and the phone returns to the join screen.
+  - A person who lost their page and joins again is a new player with a new limb. They take a gesture no seated teammate is using.
+  - Team capacity and the 30-player cap count limbs on creatures, not released seats.
+  - A phone finds its own limb by player identity in the live snapshot, because its limb number can change when a teammate leaves or returns.
 
 This prevents a built-in raw-power advantage for larger teams; it does not guarantee equal human coordination difficulty.
 
@@ -460,12 +556,22 @@ Use a simple, damped 2D simulation with configurable forward impulse, speed limi
 - Lock heading and lateral position. Strokes advance the creature toward a shared finish distance.
 - Use identical course distance and normalization rules.
 - Rank finishers by authoritative server finish time.
-- Continue after the first finisher so the other teams can finish.
-- End when all teams finish, the time limit is reached, or the facilitator ends the round.
+- The first finisher never ends the race. It ends only when the last creature crosses the line, when the section clock reaches zero, or when the facilitator presses **End round**.
 - At timeout, rank unfinished teams by distance; display that they did not finish.
 - Freeze a finished team's simulation progress without removing its players from the session.
 
-Under additive propulsion, straight swimming mainly tests individual gesture execution and contribution to shared progress. Do not invent an unexplained synchrony bonus or claim that perfect inter-player rhythm is mathematically required.
+**Synchrony (confirmed requirement; numbers are engineering defaults).** A creature moves fast only when its limbs stroke at the same time.
+
+- Accepted strokes from different limbs of one team that arrive within the sync window of the group's first stroke form a **sync group**. A stroke outside the window, or a second stroke from a limb already in the group, starts a new group.
+- A group of `k` limbs out of `N` joined limbs is worth `k × (base / N) × m(k)` forward impulse, where the multiplier `m` rises linearly from the minimum for a lone stroke to the maximum when `k = N`. Unsynchronized strokes therefore still move the creature, at a penalty.
+- The group is re-priced each time a limb joins and only the difference is granted, so the total does not depend on which stroke arrived first.
+- `N` is the number of limbs on the creature (Section 10.1). A disconnected player still counts through the grace period, which lowers the sync the team can reach and never raises anyone's power; once their limb is released, `N` shrinks and full sync is reachable again. A one-limb creature is always fully in sync.
+- A fully synchronized cycle is worth the same for every team size.
+- The window stays below the per-player minimum stroke interval so one limb cannot join a group twice, and fast unsynchronized paddling cannot beat slower synchronized paddling.
+
+Larger teams have more people to coordinate; the normalization equalizes power, not human difficulty. State the rule plainly on the leaderboard and in facilitation rather than presenting it as a hidden bonus.
+
+**Game 1 Prep** is the same lanes with scoring disabled: no countdown, no ranking, and a creature that reaches the end of the course starts another lap. Students use it to discover the rule, so the display does not label synchrony during prep. In the scored race the display may call out how many limbs just landed together.
 
 ### 10.4 Free-water practice and collection
 
@@ -475,19 +581,38 @@ Under additive propulsion, straight swimming mainly tests individual gesture exe
 - Use damping and bounded turning so a single accidental stroke does not create uncontrollable spinning.
 - Allow overlap between creatures; disable inter-team collisions.
 - Keep creatures within the arena using readable boundary behavior, such as soft wall response, rather than wrapping to the opposite side.
-- Offer an unscored 15–20-second steering familiarization. Reset positions, items, and scores before the scored collection countdown.
+- Offer an unscored steering familiarization (Game 2 Prep; planned at 3 minutes, ended by the facilitator, never by the clock). **Game 2 Prep has items to collect too** (confirmed requirement, revision 0.4): they behave exactly as in Game 2 and their points show on the display under a **Practice** heading, but no result is recorded and nothing reaches the leaderboard. Reset positions, items, and scores before the scored collection countdown.
+- **Item kinds and points** (confirmed requirement, revision 0.4; the specific values are engineering defaults): items differ in value and in how loudly the display celebrates them.
+
+  | Kind | Points | How often | Collection effect on the display |
+  | --- | --- | --- | --- |
+  | Glow seed | 100 | Common | Small starburst and `+100`, short tone |
+  | Golden bug | 300 | Uncommon, at most 4 in the water | Larger spinning burst, more smoke, **NICE!** and `+300`, two-note tone |
+  | Pond star | 1,000 | Rare, at most 1 in the water | Arena-wide flash, shockwave rings, double burst, **TEAM N JACKPOT!** and `+1000`, fanfare |
+
+  The kind of each new item is drawn from the round's seeded generator. All kinds share one collision radius, so the rare ones are not easier to hit. Reduced-motion settings drop the flash, rings, spin, and smoke.
+- **Live scoreboard** (confirmed requirement, revision 0.4): during Game 2 and its prep the display carries a column of large score tiles beside the water, ordered by score, with the leader highlighted, each score bumping when it changes and the points just gained popping beside it. Point values are deliberately large round numbers.
 
 Collection rules:
 
 1. Contact is evaluated against the creature body's 2D collision footprint, not the apparent ends of decorative limb sprites.
 2. On contact, the server removes the item exactly once and increments one team's score.
-3. Broadcast the authoritative collection event; animate a pop/sparkle and score update.
+3. Broadcast the authoritative collection event with the item's kind and points; animate the collection effect and score update.
 4. If two creatures contact the same item in the same simulation tick, use nearest-center distance, then a stable team-ID tie-break for exact equality.
 5. Initial items and team starting positions should offer comparable opportunities. Do not spawn an item already inside a creature.
 6. Default: maintain approximately 10–12 items, replacing a collected item after a short configurable delay, initially one second. Replacement is an implementation default; disappearance on collection is confirmed.
 7. Winner is the highest score when active time expires. Equal scores can share a rank; do not introduce a hidden tie-break.
 
 Use a seeded layout generator for repeatable tests. Exact seed selection is a facilitator/configuration detail.
+
+### 10.5 Leaderboard
+
+The leaderboard phase (**confirmed requirement**) reports the session's competition statistics from results the server froze when each scored round finished.
+
+- Per team, Game 1: rank, finish time or share of the course covered, accepted strokes, mean sync share (the average, over the team's strokes, of the fraction of joined limbs in that stroke's sync group), and the number of fully synchronized strokes.
+- Per team, Game 2: rank, points, items collected, accepted strokes.
+- Combined standings (**implementation default**): in each completed game a team ranked `r` out of `T` teams earns `T − r + 1` points; points are summed across games. Teams sharing a rank earn the same points, and teams with equal totals share an overall rank. Do not add a hidden tie-break.
+- Prep rounds and training never appear on the leaderboard.
 
 ## 11. Art direction and asset contract
 
@@ -501,7 +626,7 @@ The proposed creature is a round lily-bulb/pond creature with oversized leaf pad
 - Bright comic-blue water with halftone texture and sparse wave marks; decoration stays at arena edges.
 - Inked bodies with hard offset shadows, squash-and-stretch on accepted strokes, and readable speed lines.
 - Distinct team body colors plus numbers/accessories so identity does not rely on color alone.
-- Bright golden bugs or seed pods as collectibles; a collection pops a small starburst with a "+1".
+- Three collectibles that read as common, better, and rare at a glance: a glow seed, a larger golden bug, and a much larger pond star with a turning halo. Items worth more than a seed show their point value beneath them. The collection effect grows with the item (Section 10.4).
 - Panels with ink borders and hard drop shadows, caption boxes, speech bubbles, arcade-style buttons, and high-contrast readable text (body text at least 4.5:1).
 - One comic system, three intensities: the classroom display is the loudest, the phone controller is bold but dominated by the hold pad and status, and Mission Control keeps the same ink and lettering at a denser, calmer scale.
 
@@ -520,7 +645,7 @@ Require independently renderable layers/components:
 5. Water shadow.
 6. Wake/splash particles.
 7. Recognition highlight.
-8. Limb-ID label layer, readable regardless of body rotation.
+8. Limb label layer, readable regardless of body rotation. Each label shows the player's nickname (limb number for a limb nobody holds). Long names are shortened with an ellipsis to a width that scales with the creature, labels sit outside the paddle tips, neighbouring labels are pushed apart instead of overlapping, and in the straight race each team's labels stay inside its own lane.
 
 One baked image of a creature is insufficient if its limbs cannot animate independently.
 
@@ -577,7 +702,7 @@ No participant or public display can submit arbitrary position, score, winner, p
 | Player | Stable player ID, resume credential, team/limb IDs, assignment ID, input method, connection generation, sensor status, calibration version, current attempt, last accepted-stroke time |
 | Motion assignment | Gesture ID, desired direction, reference-frame convention, immutable assignment version |
 | Calibration | Version, reference/bias/noise estimates, derived thresholds, validated status; never raw position in centimeters |
-| Round | Round ID, phase, scoring enabled, run status, seed, active duration, timer state, team simulation records, finish records, items |
+| Round | Round ID, phase, scoring enabled, run status, seed, active duration, team simulation records, finish records, items |
 | Stroke | Unique stroke ID, attempt/press sequence, session ID, round ID, input/connection epoch, calibration version, gesture ID, duration and completion timing |
 | Item | Unique ID, position, collision radius, availability, collection owner/time when relevant |
 | Facilitator command | Unique command ID, target, expected session/round revision, command type, acknowledgment/result |
@@ -602,7 +727,7 @@ Names below are suggested; preserve the semantics even if names change.
 | Server → clients | `session.snapshot` | Full current authoritative state, sanitized per role |
 | Server → clients | `phase.changed` / `round.status` | Current phase/status with server time and identifier/version |
 | Server → relevant clients | `stroke.accepted` | Exactly one authoritative stroke effect plus identifiers |
-| Server → relevant clients | `item.collected` | Item ID, collecting team, new score, round ID |
+| Server → relevant clients | `item.collected` | Item ID, item kind, points awarded, collecting team, new score, round ID |
 | Server → phone | `player.recalibrate` | Invalidate that player's calibration and open its real recalibration flow |
 | Either direction | `connection.probe` | Measured timing diagnostics and clock-offset estimation |
 
@@ -634,7 +759,7 @@ Connection-state recovery may be enabled as an optimization, but a fresh authori
 ### 12.6 Clocks, pause, and stale input
 
 - Use a server monotonic clock for elapsed simulation time.
-- Calculate scored time from active time only; pausing must not consume the remaining round.
+- Calculate finish times from active time only; pausing must not add to a round's active time. The section clock is separate wall-clock time: it decides when a scored game ends but is never used to compute a finish time or a score.
 - Use server start/finish times for rankings.
 - Clear an active input on missing/canceled control updates using a watchdog; an abandoned hold must not remain visible indefinitely.
 - Do not continue a gesture across a pause, phase change, calibration change, reconnect, or network-mode change.
@@ -712,18 +837,33 @@ Proposed prototype gate, to be reviewed after testing: at least 9 of 10 delibera
 | 31st distinct player | Clear capacity rejection |
 | Two simultaneous joins to one remaining seat | Exactly one succeeds |
 | Mistyped/full team number | No silent reassignment or new team creation |
-| Refresh and reconnect | Same team, limb, gesture, and seat |
+| Refresh and reconnect | Same team, gesture, and seat; same limb when it happens inside the grace period |
 | Second controller for the same identity | No duplicate active input owner |
 | Duplicate stroke/retry | One impulse and one counter increment |
 | Old round/session/input/calibration event | Rejected without state change |
 | Pre-pause stroke delivered after resume | Rejected using the changed input epoch, even though round ID is unchanged |
 | Pause/countdown/finished input | No propulsion or score change |
-| Pause for 20 seconds | Remaining scored time unchanged |
+| Pause for 20 seconds | The round's active time is unchanged; the section clock has advanced 20 seconds |
 | Four-/five-/six-limb complete cycles | Comparable total forward impulse; no unexplained bank-turning bias |
-| One disconnected player | No power increase for remaining players |
+| Straight swim, 1 to N limbs stroking together | Speed rises with every additional limb in sync; the same strokes spread outside the window earn only the out-of-sync rate |
+| Fully synchronized cycle at each team size, in both network modes | Same total impulse; independent of arrival order inside the window |
+| First creature finishes the straight race | Round keeps running; it ends when the last creature finishes or at time up |
+| Game 1 or Game 2 reaches zero on its section clock | Round finishes with `time_up`; staging time and the countdown counted against it |
+| Training, a discussion, or a prep round runs past its planned time | Clock is negative; phase, run status, round ID, input epoch, scores, and results are all unchanged; strokes still count |
+| Scored game started, or reset, after its time was used up | Does not end at once; restarting the clock arms the automatic end again |
+| Scored game paused across zero | Stays paused; ends on resume |
+| Phase loaded | Section clock restarts from that section's planned time; the leaderboard has no clock |
+| Lobby before anyone joins | Joining clock waits at its full time; first join or **Start Clock** starts it |
+| Planned time edited or clock restarted during a live scored game | The end of the game moves with the clock; round ID, epoch, positions, and scores are untouched |
+| Game 1 Prep | No countdown, no admission lock, laps instead of a finish, nothing recorded for the leaderboard |
+| Discussion phase | Carries its topic; start, pause, end, and strokes are all rejected |
+| Leaderboard | Keeps each completed game, placement points add up, tied totals share a rank, cleared only with the session |
+| One disconnected player | Inside the grace period: no power increase for remaining players, reachable sync drops. After it: the limb is released, the others are renumbered, and strokes are priced for the limbs left on the creature |
+| Released limb returns | Same identity, team, and gesture; limb grows back in its old place if the team has room, otherwise the phone is sent back to the join screen |
+| Person rejoins as a new player after losing their page | Joins as a new limb; no ghost limb remains and team capacity counts only limbs on the creature |
 | Switch continuous/event modes | Same accepted-stroke power and scoring |
 | Two teams contact one item simultaneously | One item removal and one award |
-| Race timeout | Finishers ranked by time; unfinished teams clearly ranked by distance |
+| Race ended by time up or by the facilitator with creatures still out | Finishers ranked by time; unfinished teams clearly ranked by distance |
 | Scoped resets | Exactly the documented fields clear; membership/mappings survive where specified |
 | Unauthorized host command | Rejected by server |
 
@@ -793,7 +933,7 @@ Implement steering familiarization, free-water simulation, authoritative contact
 
 Integrate modular artwork, readable UI, localized success effects, optional sound/haptics, production configuration, and physical classroom rehearsal.
 
-The straight race is the core deliverable. If time is limited, deliver a reliable join → train → discuss/pause → straight race → results experience before polishing the optional collection mode.
+The straight race is the core deliverable. If time is limited, deliver a reliable join → train → Game 1 Prep → discussion → straight race → results experience before polishing the optional collection mode.
 
 Required implementation-agent handoff:
 
@@ -815,14 +955,14 @@ These do not block writing the first sensor prototype:
 2. Availability of an iPhone and Android phone for physical testing.
 3. Actual attendance/team capacities and how group numbers will be distributed.
 4. Final reviewed character/art assets and any preferred game title.
-5. Exact activity time budget and final discussion-question copy.
+5. Exact activity time budget, and the owner's confirmation of the draft discussion-question sentences.
 
 The following must remain stable unless the user explicitly changes the design:
 
 - One player, one limb, one assigned movement throughout the activity.
 - Assigned team-number joining.
 - Seated, compact movement.
-- Hold for the working stroke; release for the return.
+- Press and hold for the working stroke, move along the assigned arrow, release for the return. Every surface names these three beats the same way: **Press, Move, Release**.
 - Team-card training grid and recognizable success feedback.
 - Straight race first, optional free-water collection later.
 - Item disappearance on collection.

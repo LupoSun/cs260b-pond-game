@@ -1,0 +1,26 @@
+Background music for the classroom display
+==========================================
+
+All four files are Creative Commons 0 (public domain dedication) recordings from
+Freesound (https://freesound.org). CC0 needs no credit; the sources are recorded
+here so the files can be traced and replaced. Each file is Freesound's MP3 preview
+of the sound, unmodified.
+
+file          title             author      Freesound page
+------------  ----------------  ----------  ------------------------------
+lobby.mp3     Airport Lounge    code_box    https://freesound.org/s/651533/
+practice.mp3  Shaky Platforms   code_box    https://freesound.org/s/653811/
+game.mp3      Wonky Ska         code_box    https://freesound.org/s/577603/
+fanfare.mp3   Tadaa.wav         Exchanger   https://freesound.org/s/415504/
+
+When each one plays
+-------------------
+lobby.mp3     joining, staging before a round, results after a round, leaderboard (looped)
+practice.mp3  training and the two prep rounds while they run (looped)
+game.mp3      Game 1 and Game 2 from the countdown until the round ends (looped)
+fanfare.mp3   once, when the leaderboard appears
+
+Replacing a track
+-----------------
+Put a file with the same name here and rebuild. Loops should start and end on a
+bar line with no silence at either end; loudness is balanced automatically.

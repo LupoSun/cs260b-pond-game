@@ -1,28 +1,31 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type {
+  DiscussionTopic,
+  GameTeamResult,
   ItemCollectedBroadcast,
   SessionPublicSnapshot,
   StrokeAcceptedBroadcast,
   TeamPublicState,
 } from '../../shared/types.js';
-import { GESTURE_ASSIGNMENT_ORDER } from '../../shared/constants.js';
+import {
+  GESTURE_ASSIGNMENT_ORDER,
+  POND_ITEMS,
+  POND_ITEM_ORDER,
+  SECTION_LABELS,
+  formatSectionClock,
+} from '../../shared/constants.js';
 import { ComicBurst } from '../components/ComicBurst.js';
 import { CreatureCardCanvas } from '../components/CreatureCardCanvas.js';
 import { GestureDemoBadge } from '../components/GestureDemoBadge.js';
+import { SweepSteps } from '../components/SweepSteps.js';
 import { FeedbackController } from '../feedback.js';
+import { PartyMusic, type MusicMood } from '../music.js';
 import {
   drawFreewaterScene,
   drawStraightRaceScene,
   type TransientVisualEffects,
 } from '../pondRenderer.js';
 import { createPondSocket } from '../socketClient.js';
-
-function formatClock(ms: number): string {
-  const totalSec = Math.max(0, Math.ceil(ms / 1000));
-  const mins = Math.floor(totalSec / 60);
-  const secs = totalSec % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
 
 function computeDynamicGridShape(teamCount: number): { cols: number; rows: number } {
   if (teamCount <= 1) return { cols: 1, rows: 1 };
@@ -37,6 +40,132 @@ function computeDynamicGridShape(teamCount: number): { cols: number; rows: numbe
 }
 
 /**
+ * Discussion copy. Draft wording: the project owner set the direction (spec Section 5.4) but has not
+ * signed off the exact sentences (spec Section 16).
+ * The first set deliberately does not give away the synchrony rule the class is meant to discover.
+ * The second ties the experience back to the reading, Won et al. (2015), "Homuncular Flexibility in
+ * Virtual Reality": learning an unfamiliar body mapping, moving differently once the mapping rewards
+ * it, and one person with a novel body versus a team sharing one.
+ */
+const DISCUSSION_PROMPTS: Record<
+  DiscussionTopic,
+  { kicker: string; title: string; questions: string[] }
+> = {
+  before_game1: {
+    kicker: 'Before Game 1',
+    title: 'What Makes You Fast?',
+    questions: [
+      'Have you figured out what makes your creature surge ahead, and what makes it crawl?',
+      'What will your team do differently in the race?',
+    ],
+  },
+  after_game1: {
+    kicker: 'After Game 1',
+    title: 'A Body That Isn’t Yours',
+    questions: [
+      'Your phone sweep became a paddle stroke. When did that odd mapping start to feel like your own limb?',
+      'In the paper, people moved differently once a remapped body rewarded it. How did your sweeps change once you knew what made you fast?',
+      'The paper gives one person a new body. You shared one with a team. What did sharing change?',
+    ],
+  },
+};
+
+/** Points with thousands separators: 1300 -> "1,300" */
+function formatPoints(points: number): string {
+  return points.toLocaleString('en-US');
+}
+
+function formatSyncPct(syncAvg: number | null): string {
+  return syncAvg === null ? '—' : `${Math.round(syncAvg * 100)}%`;
+}
+
+/** Best (highest) value among the results that have one, with every team that shares it. */
+function pickHighlight(
+  results: GameTeamResult[],
+  valueOf: (r: GameTeamResult) => number | null,
+  format: (best: number) => string,
+): { value: string; teams: string } | null {
+  let best: number | null = null;
+  let holders: number[] = [];
+  for (const r of results) {
+    const v = valueOf(r);
+    if (v === null) continue;
+    if (best === null || v > best) {
+      best = v;
+      holders = [r.teamNumber];
+    } else if (v === best) {
+      holders.push(r.teamNumber);
+    }
+  }
+  if (best === null) return null;
+  return {
+    value: format(best),
+    teams: holders.length === 1 ? `Team ${holders[0]}` : `Teams ${holders.join(' & ')}`,
+  };
+}
+
+function formatRaceOutcome(result: GameTeamResult): string {
+  return result.finished && result.finishTimeMs !== null
+    ? `${(result.finishTimeMs / 1000).toFixed(1)}s`
+    : `${result.progressPct}% of course`;
+}
+
+const JoinQrPanel: React.FC<{
+  qrSrc: string;
+  playUrl: string;
+  sizeRangeText: string;
+  admissionLocked: boolean;
+  hero?: boolean;
+  children: React.ReactNode;
+}> = ({ qrSrc, playUrl, sizeRangeText, admissionLocked, hero = false, children }) => (
+  <div className={`qr-panel ${hero ? 'qr-panel-hero' : ''}`}>
+    <h2 className="comic-word">Scan to Join!</h2>
+    <div className="qr-image-frame">
+      <img src={qrSrc} alt={`Join QR code for ${playUrl}`} />
+    </div>
+    <div className="join-url-pill">{playUrl}</div>
+    <span className="pill pill-ready">{sizeRangeText}</span>
+    <p className="speech-bubble">{children}</p>
+    {admissionLocked && <span className="pill pill-paused">Admission Locked (Rejoining Open)</span>}
+  </div>
+);
+
+/**
+ * Training-phase panel beside the team cards. Teams have already joined by now, so instead of the
+ * join code it teaches the one thing everyone has to get right, Press / Move / Release, and
+ * reminds players to lock rotation (an unlocked screen can flip sideways mid-sweep).
+ */
+const TrainingHelpPanel: React.FC = () => (
+  <div className="qr-panel training-help-panel">
+    <h2 className="comic-word">Every Stroke</h2>
+    <SweepSteps layout="display" />
+    <div className="rotation-reminder">
+      <svg className="rotation-icon" viewBox="0 0 120 120" aria-hidden="true">
+        {/* Upright phone */}
+        <rect x="38" y="14" width="44" height="80" rx="8" fill="#ffffff" stroke="#14121f" strokeWidth="5" />
+        <line x1="52" y1="24" x2="68" y2="24" stroke="#14121f" strokeWidth="4" strokeLinecap="round" />
+        {/* Padlock on the screen */}
+        <path d="M51 56 v-7 a9 9 0 0 1 18 0 v7" fill="none" stroke="#14121f" strokeWidth="5" strokeLinecap="round" />
+        <rect x="46" y="55" width="28" height="23" rx="4" fill="#ffd91a" stroke="#14121f" strokeWidth="5" />
+        {/* Crossed-out turn arrow */}
+        <path d="M92 96 a44 44 0 0 1 -64 0" fill="none" stroke="#14121f" strokeWidth="5" strokeLinecap="round" />
+        <path d="M22 86 l5 12 l12 -5" fill="none" stroke="#14121f" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="48" y1="100" x2="72" y2="116" stroke="#dc1f26" strokeWidth="6" strokeLinecap="round" />
+      </svg>
+      <div className="rotation-reminder-text">
+        <strong>Lock rotation!</strong>
+        <span>
+          iPhone: swipe down from the top-right corner, tap the <b>rotation lock</b>.
+        </span>
+        <span>
+          Android: swipe down from the top, switch <b>Auto-rotate</b> off.
+        </span>
+      </div>
+    </div>
+  </div>
+);
+
+/**
  * Read-only Classroom Projector Display (/screen, Section 5).
  * Strictly exposes zero administrative actions, reset buttons, or credentials.
  */
@@ -44,7 +173,12 @@ export const ScreenView: React.FC = () => {
   const [snapshot, setSnapshot] = useState<SessionPublicSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [showQrDrawer, setShowQrDrawer] = useState(false);
+  const [showRotationTip, setShowRotationTip] = useState(true);
   const [muted, setMuted] = useState(false);
+  const [musicBlocked, setMusicBlocked] = useState(false);
+  // Latest points gained per team, for the "+300" chip that pops beside its score
+  const [scoreGains, setScoreGains] = useState<Record<number, { points: number; key: string }>>({});
+  const musicRef = useRef<PartyMusic | null>(null);
 
   const arenaCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapRef = useRef<SessionPublicSnapshot | null>(null);
@@ -106,8 +240,19 @@ export const ScreenView: React.FC = () => {
         y: ev.y,
         colorHex: team?.colorHex ?? '#ffd166',
         atMs: performance.now(),
+        variant: ev.variant,
+        points: ev.points,
+        teamNumber: ev.teamNumber,
       });
-      feedbackRef.current.playTone('collected');
+      setScoreGains((prev) => ({ ...prev, [ev.teamNumber]: { points: ev.points, key: awardKey } }));
+      // The rarer the item, the bigger the sound
+      feedbackRef.current.playTone(
+        ev.variant === 'pond_star'
+          ? 'collected_jackpot'
+          : ev.variant === 'golden_bug'
+            ? 'collected_big'
+            : 'collected',
+      );
     });
 
     return () => {
@@ -129,7 +274,9 @@ export const ScreenView: React.FC = () => {
           // Smooth client visual interpolation toward authoritative snapshot coordinates
           const interpTeams: TeamPublicState[] = curSnap.teams.map((t) => {
             const prev = interpSimRef.current.get(t.teamNumber);
-            if (!prev || reducedMotion || curSnap.runStatus !== 'running') {
+            // Game 1 Prep laps jump back to the start line; snap instead of sliding backward
+            const lapWrapped = prev !== undefined && t.sim.laneProgress < prev.laneProgress - 50;
+            if (!prev || reducedMotion || curSnap.runStatus !== 'running' || lapWrapped) {
               const exact = {
                 x: t.sim.x,
                 y: t.sim.y,
@@ -183,6 +330,61 @@ export const ScreenView: React.FC = () => {
     return () => window.cancelAnimationFrame(rafId);
   }, []);
 
+  // Background music: the facilitator's switch (Mission Control) decides whether there is any; the
+  // phase decides which track. Discussions are silent so the room can talk.
+  const musicMood: MusicMood = ((): MusicMood => {
+    if (!snapshot?.musicEnabled || snapshot.phase === 'discussion') return 'silent';
+    if (snapshot.phase === 'leaderboard') return 'results';
+    const live = snapshot.runStatus === 'countdown' || snapshot.runStatus === 'running';
+    if (!live || snapshot.guideVisible) return 'lobby';
+    if (snapshot.phase === 'training') return 'practice';
+    if (snapshot.phase === 'straight' || snapshot.phase === 'freewater') {
+      return snapshot.round.scoringEnabled ? 'game' : 'practice';
+    }
+    return 'lobby';
+  })();
+  useEffect(() => {
+    if (musicMood !== 'silent' && !musicRef.current) musicRef.current = new PartyMusic();
+    const music = musicRef.current;
+    if (!music) return;
+    music.setMood(musicMood);
+    // Development builds only: lets an automated check read the output level
+    if (snapRef.current?.devSimAvailable) {
+      (window as unknown as { __pondMusic?: PartyMusic }).__pondMusic = music;
+    }
+    // Browsers hold audio back until the page is clicked; say so on screen rather than stay silent
+    const check = window.setTimeout(() => setMusicBlocked(music.needsUnlock()), 500);
+    return () => window.clearTimeout(check);
+  }, [musicMood]);
+  useEffect(() => {
+    const unlock = () => {
+      const music = musicRef.current;
+      if (!music) return;
+      music.unlock();
+      window.setTimeout(() => setMusicBlocked(music.needsUnlock()), 300);
+    };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      musicRef.current?.dispose();
+      musicRef.current = null;
+    };
+  }, []);
+
+  // A new round starts with no "+points" chips left over from the last one
+  const scoreRoundId = snapshot?.round.roundId ?? null;
+  useEffect(() => {
+    setScoreGains({});
+  }, [scoreRoundId]);
+
+  // Every time Training is loaded the how-to panel comes back beside the grid
+  const trainingRoundId = snapshot?.phase === 'training' ? snapshot.round.roundId : null;
+  useEffect(() => {
+    if (trainingRoundId) setShowRotationTip(true);
+  }, [trainingRoundId]);
+
   if (!snapshot) {
     return (
       <main className="screen-shell">
@@ -200,25 +402,42 @@ export const ScreenView: React.FC = () => {
   const playUrl = `${baseOrigin}/play`;
   const qrSrc = `/api/qr?url=${encodeURIComponent(playUrl)}`;
 
+  const scored = snapshot.round.scoringEnabled;
+  const discussion =
+    snapshot.phase === 'discussion'
+      ? DISCUSSION_PROMPTS[snapshot.round.discussionTopic ?? 'after_game1']
+      : null;
+  // Discussion and leaderboard are display-only: no run status, network mode, or round to report
+  const isDisplayOnlyPhase = snapshot.phase === 'discussion' || snapshot.phase === 'leaderboard';
+
   const phaseTitle =
     snapshot.phase === 'lobby'
       ? 'Lobby · Join Your Team'
       : snapshot.phase === 'training'
         ? 'Team Paddle Training'
         : snapshot.phase === 'straight'
-          ? 'Game 1 · Straight Pond Race'
-          : snapshot.round.scoringEnabled
-            ? 'Game 2 · Free-Water Pond Harvest'
-            : 'Free-Water Steering Practice (Unscored)';
+          ? scored
+            ? 'Game 1 · Straight Pond Race'
+            : 'Game 1 Prep · Straight Swim Practice'
+          : snapshot.phase === 'freewater'
+            ? scored
+              ? 'Game 2 · Free-Water Pond Harvest'
+              : 'Game 2 Prep · Free-Water Steering Practice'
+            : snapshot.phase === 'discussion'
+              ? `Discussion · ${discussion?.kicker ?? ''}`
+              : 'Leaderboard · Session Results';
 
-  const timerDisplay =
+  const lobbyCountText =
     snapshot.phase === 'lobby'
       ? `${snapshot.teams.reduce((s, t) => s + t.joinedCount, 0)} Seated · ${snapshot.teams.length} ${
           snapshot.teams.length === 1 ? 'Team' : 'Teams'
         }`
-      : snapshot.round.durationSec > 0
-        ? formatClock(snapshot.round.remainingMs)
-        : formatClock(snapshot.round.activeElapsedMs);
+      : null;
+
+  // Section clock: counts down from the section's planned time, then turns red and runs negative.
+  // The server ends Game 1 and Game 2 at zero; every other section is only paced by it.
+  const sectionClock = snapshot.sectionClock;
+  const sectionOver = sectionClock.section !== null && sectionClock.remainingMs <= 0;
 
   const countdownDigit = Math.max(1, Math.ceil(snapshot.round.countdownRemainingMs / 1000));
   const gridShape = computeDynamicGridShape(snapshot.teams.length);
@@ -241,55 +460,110 @@ export const ScreenView: React.FC = () => {
     return a.teamNumber - b.teamNumber;
   });
 
+  const { leaderboard } = snapshot;
+  const teamByNumber = new Map(snapshot.teams.map((t) => [t.teamNumber, t]));
+  const raceResultByTeam = new Map(
+    (leaderboard.straight?.teams ?? []).map((r) => [r.teamNumber, r]),
+  );
+  const harvestResultByTeam = new Map(
+    (leaderboard.freewater?.teams ?? []).map((r) => [r.teamNumber, r]),
+  );
+  // The frozen result of the round on screen (sync figures for the Game 1 results table)
+  const thisRaceResult =
+    leaderboard.straight?.roundId === snapshot.round.roundId ? raceResultByTeam : null;
+
+  // Session highlights for the leaderboard. Each names every team sharing the best value and is
+  // omitted until a game has produced one.
+  const raceTeams = leaderboard.straight?.teams ?? [];
+  const fastestFinish = pickHighlight(
+    raceTeams,
+    (r) => (r.finished && r.finishTimeMs !== null ? -r.finishTimeMs : null),
+    (best) => `${(-best / 1000).toFixed(1)}s`,
+  );
+  const bestSync = pickHighlight(
+    raceTeams,
+    (r) => (r.syncAvg !== null ? Math.round(r.syncAvg * 100) : null),
+    (best) => `${best}%`,
+  );
+  const topHarvest = pickHighlight(
+    leaderboard.freewater?.teams ?? [],
+    (r) => (r.score > 0 ? r.score : null),
+    (best) => formatPoints(best),
+  );
+  const sessionStrokes = [...raceResultByTeam.values(), ...harvestResultByTeam.values()].reduce(
+    (sum, r) => sum + r.strokes,
+    0,
+  );
+
   return (
     <main className="screen-shell">
       {/* Compact Public Header (No admin controls!) */}
       <header className="screen-header">
         <div className="screen-title-group">
           <h1 className="screen-title">{phaseTitle}</h1>
-          <span
-            className={`pill ${
-              snapshot.runStatus === 'running'
-                ? 'pill-running'
-                : snapshot.runStatus === 'paused'
-                  ? 'pill-paused'
-                  : 'pill-ready'
-            }`}
-          >
-            {snapshot.runStatus === 'countdown'
-              ? `Countdown ${Math.ceil(snapshot.round.countdownRemainingMs / 1000)}s`
-              : snapshot.runStatus.toUpperCase()}
-          </span>
-          <span className="pill">
-            {snapshot.networkMode === 'continuous' ? 'Live Limb Mode' : 'Completed-Stroke Mode'}
-          </span>
+          {!isDisplayOnlyPhase && (
+            <>
+              <span
+                className={`pill ${
+                  snapshot.runStatus === 'running'
+                    ? 'pill-running'
+                    : snapshot.runStatus === 'paused'
+                      ? 'pill-paused'
+                      : 'pill-ready'
+                }`}
+              >
+                {snapshot.runStatus === 'countdown'
+                  ? `Countdown ${Math.ceil(snapshot.round.countdownRemainingMs / 1000)}s`
+                  : snapshot.runStatus.toUpperCase()}
+              </span>
+              <span className="pill">
+                {snapshot.networkMode === 'continuous' ? 'Live Limb Mode' : 'Completed-Stroke Mode'}
+              </span>
+            </>
+          )}
         </div>
 
         <div className="screen-title-group">
-          {snapshot.phase === 'freewater' && snapshot.round.scoringEnabled && (
-            <div className="btn-row" style={{ gap: '0.4rem' }}>
-              {competingTeams.map((t) => (
-                <span key={t.teamNumber} className="pill" style={{ borderColor: t.colorHex }}>
-                  <span className="team-swatch-dot" style={{ backgroundColor: t.colorHex, width: 10, height: 10 }} />
-                  T{t.teamNumber}: {t.sim.score}
-                </span>
-              ))}
+          {lobbyCountText !== null && <div className="screen-clock">{lobbyCountText}</div>}
+
+          {sectionClock.section !== null && (
+            <div
+              className={`screen-clock section-clock ${sectionOver ? 'is-over' : ''} ${
+                sectionClock.running ? '' : 'is-waiting'
+              }`}
+              role="timer"
+              aria-label={`${SECTION_LABELS[sectionClock.section]}: ${
+                sectionOver ? 'over time by' : 'time left'
+              } ${formatSectionClock(sectionClock.remainingMs).replace('-', '')}`}
+            >
+              {sectionOver && <span className="section-clock-flag">Over</span>}
+              {formatSectionClock(sectionClock.remainingMs)}
             </div>
           )}
 
-          <div className="screen-clock" aria-label="Round timer">
-            {timerDisplay}
-          </div>
-
-          {snapshot.phase !== 'lobby' && !snapshot.admissionLocked && !snapshot.guideVisible && (
+          {snapshot.phase === 'training' && snapshot.teams.length > 0 && !snapshot.guideVisible && (
             <button
               type="button"
               className="btn-subtle btn-xs"
-              onClick={() => setShowQrDrawer((v) => !v)}
+              onClick={() => setShowRotationTip((v) => !v)}
             >
-              {showQrDrawer ? 'Hide Join QR' : 'Join QR'}
+              {showRotationTip ? 'Hide How-To' : 'Show How-To'}
             </button>
           )}
+
+          {/* Latecomers: the join QR is a corner drawer outside the lobby (Training included) */}
+          {snapshot.phase !== 'lobby' &&
+            !(snapshot.phase === 'training' && snapshot.teams.length === 0) &&
+            !snapshot.admissionLocked &&
+            !snapshot.guideVisible && (
+              <button
+                type="button"
+                className="btn-subtle btn-xs"
+                onClick={() => setShowQrDrawer((v) => !v)}
+              >
+                {showQrDrawer ? 'Hide Join QR' : 'Join QR'}
+              </button>
+            )}
 
           <button
             type="button"
@@ -298,17 +572,28 @@ export const ScreenView: React.FC = () => {
               const next = !muted;
               setMuted(next);
               feedbackRef.current.setMuted(next);
+              musicRef.current?.setMuted(next);
             }}
           >
             {muted ? 'Sound Off' : 'Sound On'}
           </button>
 
+          {musicBlocked && !muted && (
+            <button type="button" className="btn-primary btn-xs music-unlock">
+              Click to Start Music
+            </button>
+          )}
+
           {!connected && <span className="pill pill-danger">Reconnecting</span>}
         </div>
       </header>
 
-      {/* Expandable Corner QR Banner when outside Lobby (kept clear of active creatures) */}
-      {showQrDrawer && snapshot.phase !== 'lobby' && !snapshot.guideVisible && (
+      {/* Expandable corner QR drawer for latecomers (the lobby carries the join panel on the left) */}
+      {showQrDrawer &&
+        snapshot.phase !== 'lobby' &&
+        !(snapshot.phase === 'training' && snapshot.teams.length === 0) &&
+        !snapshot.admissionLocked &&
+        !snapshot.guideVisible && (
         <aside className="qr-drawer">
           <div className="qr-image-frame">
             <img src={qrSrc} alt="Scan to join pond game" />
@@ -347,21 +632,15 @@ export const ScreenView: React.FC = () => {
           </section>
         ) : (
           <section className="lobby-layout">
-            <div className="qr-panel">
-              <h2 className="comic-word">Scan to Join!</h2>
-              <div className="qr-image-frame">
-                <img src={qrSrc} alt={`Join QR code for ${playUrl}`} />
-              </div>
-              <div className="join-url-pill">{playUrl}</div>
-              <span className="pill pill-ready">{sizeRangeText}</span>
-              <p className="speech-bubble">
-                Enter your assigned <strong>Team Number</strong>, enable motion sensors, and
-                calibrate your paddle.
-              </p>
-              {snapshot.admissionLocked && (
-                <span className="pill pill-paused">Admission Locked (Rejoining Open)</span>
-              )}
-            </div>
+            <JoinQrPanel
+              qrSrc={qrSrc}
+              playUrl={playUrl}
+              sizeRangeText={sizeRangeText}
+              admissionLocked={snapshot.admissionLocked}
+            >
+              Enter your assigned <strong>Team Number</strong>, enable motion sensors, and calibrate
+              your paddle.
+            </JoinQrPanel>
 
             <div
               className="dynamic-team-grid"
@@ -422,7 +701,7 @@ export const ScreenView: React.FC = () => {
           </section>
         ))}
 
-      {/* 2. TRAINING GRID VIEW: Dynamic joined-team grid with proportional card resizing */}
+      {/* 2. TRAINING GRID VIEW: Press/Move/Release how-to on the left, live team-card grid beside it */}
       {snapshot.phase === 'training' && (
         <section
           style={{
@@ -435,117 +714,161 @@ export const ScreenView: React.FC = () => {
         >
           {snapshot.teams.length === 0 ? (
             <div className="lobby-empty-stage">
-              <div className="overlay-box">
-                <h2 className="comic-word">Waiting for Teams!</h2>
-                <p>
-                  Click <strong>Join QR</strong> in the top bar so participants can scan{' '}
-                  <code>{playUrl}</code> and spawn their team creatures.
-                </p>
-              </div>
+              <JoinQrPanel
+                qrSrc={qrSrc}
+                playUrl={playUrl}
+                sizeRangeText={sizeRangeText}
+                admissionLocked={snapshot.admissionLocked}
+                hero
+              >
+                Waiting for teams! Scan, enter your <strong>Team Number</strong>, and your creature
+                appears here.
+              </JoinQrPanel>
             </div>
           ) : (
-            <div
-              className="dynamic-team-grid"
-              data-count={snapshot.teams.length}
-              style={gridVars}
-            >
-              {snapshot.teams.map((team, cardIndex) => {
-                const ackAgeMs = team.latestAcknowledgment
-                  ? snapshot.serverNowMs - team.latestAcknowledgment.atServerMs
-                  : null;
-                const isAckFresh = ackAgeMs !== null && ackAgeMs < 2400;
-                const belowMin = team.limbCount < team.minSeats;
+            <div className={showRotationTip ? 'lobby-layout' : 'training-grid-only'}>
+              {showRotationTip && <TrainingHelpPanel />}
+              <div
+                className="dynamic-team-grid"
+                data-count={snapshot.teams.length}
+                style={gridVars}
+              >
+                {snapshot.teams.map((team, cardIndex) => {
+                  const ackAgeMs = team.latestAcknowledgment
+                    ? snapshot.serverNowMs - team.latestAcknowledgment.atServerMs
+                    : null;
+                  const isAckFresh = ackAgeMs !== null && ackAgeMs < 2400;
+                  const belowMin = team.limbCount < team.minSeats;
 
-                return (
-                  <article
-                    key={team.teamNumber}
-                    className="team-training-card"
-                    style={{ '--i': cardIndex } as React.CSSProperties}
-                  >
-                    <div className="team-card-header">
-                      <div className="team-card-num">
-                        <span
-                          className="team-swatch-dot"
-                          style={{ backgroundColor: team.colorHex }}
-                        />
-                        Team {team.teamNumber} · {team.teamName}
-                      </div>
-                      <span className={`pill ${belowMin ? 'pill-paused' : ''}`}>
-                        {team.practicedCount}/{team.limbCount} practiced · {team.calibratedCount}/
-                        {team.limbCount} cal
-                        {belowMin ? ` (min ${team.minSeats})` : ''}
-                      </span>
-                    </div>
-
-                    <CreatureCardCanvas
-                      team={team}
-                      effects={effectsRef.current}
-                      isPaused={snapshot.runStatus !== 'running'}
-                    />
-
-                    <div className="limb-status-row">
-                      {team.limbs.map((l) => (
-                        <div
-                          key={l.limbIndex}
-                          className={`limb-chip ${
-                            l.hasSucceededStroke
-                              ? 'is-succeeded'
-                              : l.calibrated && l.connected
-                                ? 'is-calibrated'
-                                : ''
-                          }`}
-                        >
-                          <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
-                          {l.hasSucceededStroke
-                            ? '✓'
-                            : l.calibrated
-                              ? l.connected
-                                ? 'Cal'
-                                : 'Off'
-                              : 'Setup'}
+                  return (
+                    <article
+                      key={team.teamNumber}
+                      className="team-training-card"
+                      style={{ '--i': cardIndex } as React.CSSProperties}
+                    >
+                      <div className="team-card-header">
+                        <div className="team-card-num">
+                          <span
+                            className="team-swatch-dot"
+                            style={{ backgroundColor: team.colorHex }}
+                          />
+                          Team {team.teamNumber} · {team.teamName}
                         </div>
-                      ))}
-                    </div>
+                        <span className={`pill ${belowMin ? 'pill-paused' : ''}`}>
+                          {team.practicedCount}/{team.limbCount} practiced · {team.calibratedCount}/
+                          {team.limbCount} cal
+                          {belowMin ? ` (min ${team.minSeats})` : ''}
+                        </span>
+                      </div>
 
-                    <div className={`card-ack-bar ${isAckFresh ? 'is-fresh' : ''}`}>
-                      <span>
-                        {team.latestAcknowledgment
-                          ? team.latestAcknowledgment.text
-                          : snapshot.runStatus === 'ready'
-                            ? 'Waiting for facilitator to start training'
-                            : 'Hold button & sweep your assigned direction'}
-                      </span>
-                    </div>
-                  </article>
-                );
-              })}
+                      <CreatureCardCanvas
+                        team={team}
+                        effects={effectsRef.current}
+                        isPaused={snapshot.runStatus !== 'running'}
+                      />
+
+                      <div className="limb-status-row">
+                        {team.limbs.map((l) => (
+                          <div
+                            key={l.limbIndex}
+                            className={`limb-chip ${
+                              l.hasSucceededStroke
+                                ? 'is-succeeded'
+                                : l.calibrated && l.connected
+                                  ? 'is-calibrated'
+                                  : ''
+                            }`}
+                          >
+                            <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
+                            {l.hasSucceededStroke
+                              ? '✓'
+                              : l.calibrated
+                                ? l.connected
+                                  ? 'Cal'
+                                  : 'Off'
+                                : 'Setup'}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className={`card-ack-bar ${isAckFresh ? 'is-fresh' : ''}`}>
+                        <span>
+                          {team.latestAcknowledgment
+                            ? team.latestAcknowledgment.text
+                            : snapshot.runStatus === 'ready'
+                              ? 'Waiting for facilitator to start training'
+                              : 'Press, move along your arrow, release'}
+                        </span>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             </div>
           )}
 
           {snapshot.runStatus === 'paused' && (
             <div className="stage-overlay">
               <div className="overlay-box">
-                <h2 className="comic-word">
-                  {snapshot.round.pausedForDiscussion ? 'Time to Talk!' : 'Paused!'}
-                </h2>
-                {snapshot.round.pausedForDiscussion ? (
-                  <ul>
-                    <li>How did visual and limb feedback help you learn your unfamiliar paddle mapping?</li>
-                    <li>How does learning your own limb differ from coordinating with 4 to 5 teammates?</li>
-                    <li>What strategy will your team use when the race begins?</li>
-                  </ul>
-                ) : (
-                  <p>Paddles are frozen. Wait for the facilitator to resume or load the race.</p>
-                )}
+                <h2 className="comic-word">Paused!</h2>
+                <p>Paddles are frozen. Wait for the facilitator to resume.</p>
               </div>
             </div>
           )}
         </section>
       )}
 
-      {/* 3. STRAIGHT RACE & FREE-WATER ARENA VIEWS */}
+      {/* 3. STRAIGHT SWIM & FREE-WATER ARENA VIEWS (prep rounds are the same arenas, unscored) */}
       {(snapshot.phase === 'straight' || snapshot.phase === 'freewater') && (
         <section className="arena-stage-wrap">
+          {/* Game 2 and its prep: big live scoreboard beside the water, leader on top */}
+          {snapshot.phase === 'freewater' && (
+            <aside
+              className="scoreboard"
+              aria-label={scored ? 'Live scores' : 'Practice scores'}
+              style={{ '--n': Math.max(1, competingTeams.length) } as React.CSSProperties}
+            >
+              <div className="scoreboard-title comic-word">{scored ? 'Score' : 'Practice'}</div>
+              <ol className="scoreboard-list">
+                {[...competingTeams]
+                  .sort((a, b) => b.sim.score - a.sim.score || a.teamNumber - b.teamNumber)
+                  .map((team, place) => {
+                    const gain = scoreGains[team.teamNumber];
+                    const leading = place === 0 && team.sim.score > 0;
+                    return (
+                      <li
+                        key={team.teamNumber}
+                        className={`score-tile ${leading ? 'is-leading' : ''}`}
+                        style={{ '--team': team.colorHex } as React.CSSProperties}
+                      >
+                        <div className="score-tile-head">
+                          <span className="score-tile-place">{place + 1}</span>
+                          <span className="team-swatch-dot" style={{ backgroundColor: team.colorHex }} />
+                          <span className="score-tile-team">Team {team.teamNumber}</span>
+                        </div>
+                        <div className="score-tile-points">
+                          <span key={team.sim.score} className="score-tile-number">
+                            {formatPoints(team.sim.score)}
+                          </span>
+                          {gain && (
+                            <span key={gain.key} className="score-gain" aria-hidden="true">
+                              +{formatPoints(gain.points)}
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+              </ol>
+              <div className="scoreboard-legend">
+                {POND_ITEM_ORDER.map((variant) => (
+                  <span key={variant} className={`legend-item legend-${variant}`}>
+                    {POND_ITEMS[variant].label} <strong>{formatPoints(POND_ITEMS[variant].points)}</strong>
+                  </span>
+                ))}
+              </div>
+            </aside>
+          )}
           <canvas
             ref={arenaCanvasRef}
             width={snapshot.round.arenaWidth}
@@ -567,10 +890,12 @@ export const ScreenView: React.FC = () => {
                 <h2 className="comic-word">{phaseTitle}</h2>
                 <p>
                   {snapshot.phase === 'straight'
-                    ? 'Every team member keeps the same limb and gesture. Paddle together to reach the checkered finish line first!'
-                    : snapshot.round.scoringEnabled
-                      ? 'Left-bank paddles turn right; right-bank paddles turn left. Collect golden bugs & glowing seeds!'
-                      : 'Unscored steering familiarization: practice turning your shared creature in open water.'}
+                    ? scored
+                      ? 'Same limb, same sweep. The race runs until the last creature crosses the checkered line or the clock hits zero!'
+                      : 'Practice lap after lap, no score. Experiment as a team: what makes your creature surge ahead?'
+                    : scored
+                      ? `Left-bank paddles turn right; right-bank paddles turn left. Seeds ${POND_ITEMS.glow_seed.points}, golden bugs ${POND_ITEMS.golden_bug.points}, and the rare star ${formatPoints(POND_ITEMS.pond_star.points)}. The harvest ends when the clock hits zero!`
+                      : 'Steering practice with real items to chase. Points here are just for practice and are not kept.'}
                 </p>
               </div>
             </div>
@@ -592,15 +917,13 @@ export const ScreenView: React.FC = () => {
             </div>
           )}
 
-          {/* Pause / Discussion Overlay */}
+          {/* Pause Overlay */}
           {snapshot.runStatus === 'paused' && (
             <div className="stage-overlay">
               <div className="overlay-box">
-                <h2 className="comic-word">
-                  {snapshot.round.pausedForDiscussion ? 'Time to Talk!' : 'Paused!'}
-                </h2>
+                <h2 className="comic-word">Paused!</h2>
                 <p>
-                  Simulation, positions, and remaining active clock ({formatClock(snapshot.round.remainingMs)}) are preserved.
+                  Positions and scores are kept exactly as they are.
                   Release and press again once resumed.
                 </p>
               </div>
@@ -614,25 +937,28 @@ export const ScreenView: React.FC = () => {
                 <span className="overlay-sticker" aria-hidden="true">
                   <ComicBurst fill="#ffd91a" seed={9} className="burst-pop">
                     <span className="comic-word" style={{ '--word-fill': '#dc1f26' } as React.CSSProperties}>
-                      {snapshot.phase === 'straight' ? 'FINISH!' : 'YUM!'}
+                      {!scored ? 'NICE!' : snapshot.phase === 'straight' ? 'FINISH!' : 'YUM!'}
                     </span>
                   </ComicBurst>
                 </span>
                 <h2 className="comic-word">
-                  {snapshot.phase === 'straight'
-                    ? 'Straight Race Results'
-                    : snapshot.round.scoringEnabled
-                      ? 'Pond Harvest Results'
-                      : 'Steering Practice Complete'}
+                  {!scored
+                    ? 'Practice Complete'
+                    : snapshot.phase === 'straight'
+                      ? 'Straight Race Results'
+                      : 'Pond Harvest Results'}
                 </h2>
 
-                {(snapshot.phase === 'straight' || snapshot.round.scoringEnabled) && (
+                {!scored && <p>No score this round. Eyes up front for what comes next.</p>}
+
+                {scored && (
                   <table className="results-table">
                     <thead>
                       <tr>
                         <th>Rank</th>
                         <th>Team</th>
-                        <th>{snapshot.phase === 'straight' ? 'Finish / Distance' : 'Items Collected'}</th>
+                        <th>{snapshot.phase === 'straight' ? 'Finish / Distance' : 'Points'}</th>
+                        {snapshot.phase === 'straight' && thisRaceResult && <th>In Sync</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -663,8 +989,11 @@ export const ScreenView: React.FC = () => {
                                 ? team.sim.finished && team.sim.finishTimeMs !== null
                                   ? `Finished in ${(team.sim.finishTimeMs / 1000).toFixed(2)}s`
                                   : `Did Not Finish (${pct}% of course)`
-                                : `${team.sim.score} point${team.sim.score === 1 ? '' : 's'}`}
+                                : `${formatPoints(team.sim.score)} points · ${team.sim.itemsCollected} item${team.sim.itemsCollected === 1 ? '' : 's'}`}
                             </td>
+                            {snapshot.phase === 'straight' && thisRaceResult && (
+                              <td>{formatSyncPct(thisRaceResult.get(team.teamNumber)?.syncAvg ?? null)}</td>
+                            )}
                           </tr>
                         );
                       })}
@@ -677,7 +1006,158 @@ export const ScreenView: React.FC = () => {
         </section>
       )}
 
-      {/* 4. HOW-TO-PLAY GUIDE: facilitator-toggled from Mission Control; read-only here */}
+      {/* 4. DISCUSSION: a dedicated phase with its own prompts; nothing is simulated behind it */}
+      {discussion && (
+        <section className="talk-stage">
+          <div className="talk-panel">
+            <span className="talk-sticker" aria-hidden="true">
+              <ComicBurst fill="#ff5aa5" seed={5} className="burst-wobble">
+                <span className="comic-word" style={{ '--word-fill': '#ffffff' } as React.CSSProperties}>
+                  TALK!
+                </span>
+              </ComicBurst>
+            </span>
+            <div className="caption-box talk-kicker">{discussion.kicker}</div>
+            <h2 className="comic-word">{discussion.title}</h2>
+            <ol className="talk-questions">
+              {discussion.questions.map((q) => (
+                <li key={q}>{q}</li>
+              ))}
+            </ol>
+            {snapshot.round.discussionTopic === 'after_game1' && leaderboard.straight && (
+              <div className="talk-recap">
+                <span className="talk-recap-label">Game 1</span>
+                {[...leaderboard.straight.teams]
+                  .sort((x, y) => (x.rank ?? 99) - (y.rank ?? 99) || x.teamNumber - y.teamNumber)
+                  .map((r) => (
+                    <span key={r.teamNumber} className="pill">
+                      <span
+                        className="team-swatch-dot"
+                        style={{
+                          backgroundColor: teamByNumber.get(r.teamNumber)?.colorHex,
+                          width: 10,
+                          height: 10,
+                        }}
+                      />
+                      #{r.rank ?? '—'} Team {r.teamNumber} · {formatRaceOutcome(r)} ·{' '}
+                      {formatSyncPct(r.syncAvg)} in sync
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* 5. LEADERBOARD: frozen results of the last completed run of each scored game */}
+      {snapshot.phase === 'leaderboard' && (
+        <section className="leaderboard-stage">
+          <div className="leaderboard-panel">
+            <h2 className="comic-word">Final Standings</h2>
+
+            {leaderboard.standings.length === 0 ? (
+              <p className="leaderboard-empty">
+                No scored game has finished yet. Standings appear here after Game 1 or Game 2.
+              </p>
+            ) : (
+              <>
+                <div className="stat-tile-row">
+                  {(
+                    [
+                      ['Fastest Finish', fastestFinish],
+                      ['Best Team Sync', bestSync],
+                      ['Biggest Harvest', topHarvest],
+                    ] as const
+                  ).map(
+                    ([label, highlight]) =>
+                      highlight && (
+                        <div key={label} className="stat-tile">
+                          <span className="stat-tile-label">{label}</span>
+                          <span className="stat-tile-value">{highlight.value}</span>
+                          <span className="stat-tile-team">{highlight.teams}</span>
+                        </div>
+                      ),
+                  )}
+                  <div className="stat-tile">
+                    <span className="stat-tile-label">Strokes Landed</span>
+                    <span className="stat-tile-value">{sessionStrokes}</span>
+                    <span className="stat-tile-team">Whole class</span>
+                  </div>
+                </div>
+
+                <table className="results-table leaderboard-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Team</th>
+                      <th>Game 1 · Race</th>
+                      <th>In Sync</th>
+                      <th>Game 2 · Harvest</th>
+                      <th>Strokes</th>
+                      <th>Points</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaderboard.standings.map((row, rowIndex) => {
+                      const team = teamByNumber.get(row.teamNumber);
+                      const race = raceResultByTeam.get(row.teamNumber);
+                      const harvest = harvestResultByTeam.get(row.teamNumber);
+                      return (
+                        <tr
+                          key={row.teamNumber}
+                          className={row.rank === 1 ? 'is-winner' : undefined}
+                          style={{ '--i': rowIndex } as React.CSSProperties}
+                        >
+                          <td>
+                            <strong>#{row.rank}</strong>
+                          </td>
+                          <td>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
+                              <span
+                                className="team-swatch-dot"
+                                style={{ backgroundColor: team?.colorHex }}
+                              />
+                              <strong>Team {row.teamNumber}</strong>
+                              {team ? ` · ${team.teamName}` : ''}
+                            </span>
+                          </td>
+                          <td>{race ? `#${race.rank ?? '—'} · ${formatRaceOutcome(race)}` : '—'}</td>
+                          <td>
+                            {race ? formatSyncPct(race.syncAvg) : '—'}
+                            {race && race.fullSyncCount ? (
+                              <span className="leaderboard-sub"> · {race.fullSyncCount}× all together</span>
+                            ) : null}
+                          </td>
+                          <td>
+                            {harvest
+                              ? `#${harvest.rank ?? '—'} · ${formatPoints(harvest.score)} pts`
+                              : '—'}
+                          </td>
+                          <td>{(race?.strokes ?? 0) + (harvest?.strokes ?? 0)}</td>
+                          <td>
+                            <strong>{row.points}</strong>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                <p className="leaderboard-note">
+                  Points per game: teams in the game minus your rank, plus 1. Ties share a rank.{' '}
+                  {!leaderboard.straight
+                    ? 'Game 1 has not been played.'
+                    : !leaderboard.freewater
+                      ? 'Game 2 has not been played.'
+                      : ''}
+                </p>
+              </>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* 6. HOW-TO-PLAY GUIDE: shown by default on a fresh session, toggled from Mission Control; read-only here */}
       {snapshot.guideVisible && (
         <section className="guide-stage" aria-label="How to play">
           <div className="guide-grid">
@@ -712,7 +1192,10 @@ export const ScreenView: React.FC = () => {
                   iPhone: open the page in <strong>Safari</strong>. Android: use{' '}
                   <strong>Chrome</strong>.
                 </li>
-                <li>Hold the phone upright with the screen facing you, then keep still to calibrate.</li>
+                <li>
+                  <strong>Lock screen rotation</strong>, hold the phone upright facing you, then
+                  keep still to calibrate.
+                </li>
               </ul>
             </article>
 
@@ -724,7 +1207,7 @@ export const ScreenView: React.FC = () => {
                   <strong>one limb</strong>.
                 </li>
                 <li>You keep the same team, limb, and sweep the whole time.</li>
-                <li>Practice first, then paddle together to race across the pond!</li>
+                <li>Practice first, then race across the pond and find out what makes you fast!</li>
               </ul>
             </article>
 
@@ -732,11 +1215,8 @@ export const ScreenView: React.FC = () => {
               <h2 className="guide-heading">
                 <span className="guide-num">3</span> Learn Your Sweep
               </h2>
-              <p>
-                Your phone shows which one is yours. <strong>Hold</strong> the button,{' '}
-                <strong>sweep</strong> the phone a short way, <strong>release</strong>, then bring
-                it back. Small moves are enough, so stay seated.
-              </p>
+              <SweepSteps layout="row" />
+              <p>Your phone shows which sweep is yours. Small moves are enough, so stay seated.</p>
               <div className="guide-sweep-grid">
                 {GESTURE_ASSIGNMENT_ORDER.map((gestureId) => (
                   <GestureDemoBadge key={gestureId} gestureId={gestureId} animate compact />

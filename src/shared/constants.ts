@@ -1,4 +1,13 @@
-import type { GestureId, GestureSpec, LimbSlotSpec, TeamPublicState } from './types.js';
+import type {
+  ActivityPhase,
+  SectionId,
+  DiscussionTopic,
+  GestureId,
+  GestureSpec,
+  LimbSlotSpec,
+  PondItemVariant,
+  TeamPublicState,
+} from './types.js';
 
 export const MAX_TOTAL_PLAYERS = 30;
 export const MIN_TEAM_SIZE_LIMIT = 1;
@@ -48,8 +57,10 @@ export const GESTURE_SPECS: Record<GestureId, GestureSpec> = {
 };
 
 /**
- * Deterministic gesture rotation order across limbs.
- * Deliberately decoupled from whether a paddle sits on the left or right bank of the creature.
+ * The gesture vocabulary, in the order the how-to-play guide shows it.
+ * Assignment is random: the server shuffles this list once per team and hands limb i the i-th
+ * entry, so a gesture is deliberately decoupled from team number, join order, and whether the
+ * paddle sits on the left or right bank of the creature.
  */
 export const GESTURE_ASSIGNMENT_ORDER: GestureId[] = [
   'left_to_right',
@@ -255,9 +266,9 @@ export const GAME_DEFAULTS = {
   defaultMinTeamSize: 4,
   defaultMaxTeamSize: 6,
   countdownDurationMs: 3000,
-  straightRaceDurationSec: 90,
-  freewaterPracticeDurationSec: 20,
-  freewaterScoredDurationSec: 90,
+  /** Bounds for a section's time budget when the facilitator edits it */
+  minSectionBudgetSec: 10,
+  maxSectionBudgetSec: 3600,
   /** Server simulation fixed timestep (60 Hz) */
   simTickMs: 1000 / 60,
   /** Public snapshot broadcast interval (~15 Hz) */
@@ -272,10 +283,22 @@ export const GAME_DEFAULTS = {
   abandonedHoldTimeoutMs: 2400,
   /**
    * Physics constants:
-   * One full team stroke cycle (all N limbs accepting 1 stroke) adds BASE_CYCLE_FORWARD_IMPULSE.
-   * With drag = 1.0/s and courseLength = 1000, ~0.95 cycles/sec finishes in ~58s (target: 45-75s).
+   * One full team stroke cycle (all N limbs accepting 1 stroke) adds BASE_CYCLE_FORWARD_IMPULSE in free water.
+   * In the straight swim that cycle is scaled by the sync multiplier below: with drag = 1.0/s and
+   * courseLength = 1000, 0.7 cycles/sec finishes in ~53s fully in sync and ~225s fully out of sync.
    */
   baseCycleForwardImpulse: 18.0,
+  /**
+   * Straight-swim synchrony (untested on physical phones; tune in rehearsal).
+   * Strokes from different limbs of one team accepted within syncWindowMs of the first one form a sync group.
+   * Must stay below minAcceptedStrokeIntervalMs so one limb cannot join the same group twice.
+   */
+  syncWindowMs: 350,
+  /** Propulsion multiplier for a stroke nobody else joined */
+  syncMinMultiplier: 0.35,
+  /** Propulsion multiplier when every joined limb strokes together */
+  syncMaxMultiplier: 1.5,
+  straightMaxLinearSpeed: 60.0,
   /** Bank turning impulse: full left-bank cycle adds +yawBankImpulse (turns right / clockwise in screen y-down or standard heading) */
   yawBankImpulse: 1.55,
   linearDragPerSec: 1.0,
@@ -289,4 +312,127 @@ export const GAME_DEFAULTS = {
   itemCollisionRadius: 20,
   targetActiveItems: 11,
   itemRespawnDelayMs: 1000,
+  /**
+   * How long a disconnected player's limb stays on the creature before it is released (engineering
+   * default). Long enough to ride out a page refresh or a network blip without the limb flickering.
+   */
+  disconnectedLimbGraceMs: 5000,
 } as const;
+
+/**
+ * Open-water collectibles, common to rare (engineering defaults, untuned in a classroom).
+ * `spawnWeight` is the relative chance a newly placed item is this kind; `maxActive` caps how many
+ * can be in the water at once, which is what keeps the star rare.
+ */
+export const POND_ITEMS: Record<
+  PondItemVariant,
+  { label: string; points: number; spawnWeight: number; maxActive: number }
+> = {
+  glow_seed: { label: 'Glow Seed', points: 100, spawnWeight: 62, maxActive: Infinity },
+  golden_bug: { label: 'Golden Bug', points: 300, spawnWeight: 30, maxActive: 4 },
+  pond_star: { label: 'Pond Star', points: 1000, spawnWeight: 8, maxActive: 1 },
+};
+export const POND_ITEM_ORDER: PondItemVariant[] = ['glow_seed', 'golden_bug', 'pond_star'];
+
+/**
+ * Straight-swim propulsion multiplier for a sync group of `limbsInSync` out of `joinedLimbs`.
+ * Rises linearly from syncMinMultiplier (alone) to syncMaxMultiplier (every joined limb together).
+ * `joinedLimbs` is the seat count, so a disconnected teammate lowers the reachable multiplier
+ * and never raises anyone's power. A one-limb creature is always fully in sync.
+ */
+export function getSyncMultiplier(limbsInSync: number, joinedLimbs: number): number {
+  const { syncMinMultiplier: lo, syncMaxMultiplier: hi } = GAME_DEFAULTS;
+  if (joinedLimbs <= 1) return hi;
+  const k = Math.max(1, Math.min(joinedLimbs, limbsInSync));
+  return lo + (hi - lo) * ((k - 1) / (joinedLimbs - 1));
+}
+
+/** Short facilitator- and player-facing name for a phase, shared by all three surfaces. */
+export function describePhase(phase: ActivityPhase, scoringEnabled: boolean): string {
+  switch (phase) {
+    case 'lobby':
+      return 'Lobby';
+    case 'training':
+      return 'Training';
+    case 'straight':
+      return scoringEnabled ? 'Game 1' : 'Game 1 Prep';
+    case 'freewater':
+      return scoringEnabled ? 'Game 2' : 'Game 2 Prep';
+    case 'discussion':
+      return 'Discussion';
+    case 'leaderboard':
+      return 'Leaderboard';
+  }
+}
+
+/**
+ * The session plan (owner's schedule, revision 0.5): how long each section is meant to take.
+ * The section clock starts when a phase is loaded and counts down from the budget. At zero it ends
+ * a scored game (Game 1, Game 2). Every other section is only paced by it: the clock turns red and
+ * runs negative, and the facilitator moves on when they choose.
+ * Total: 25 minutes.
+ */
+export const SECTION_ORDER: SectionId[] = [
+  'joining',
+  'training',
+  'game1_prep',
+  'discussion_before_game1',
+  'game1',
+  'discussion_after_game1',
+  'game2_prep',
+  'game2',
+];
+
+export const SECTION_BUDGET_DEFAULTS_SEC: Record<SectionId, number> = {
+  joining: 240,
+  training: 120,
+  game1_prep: 180,
+  discussion_before_game1: 120,
+  game1: 240,
+  discussion_after_game1: 120,
+  game2_prep: 180,
+  game2: 300,
+};
+
+export const SECTION_LABELS: Record<SectionId, string> = {
+  joining: 'Explaining and Joining',
+  training: 'Learning and Training',
+  game1_prep: 'Game 1 Prep',
+  discussion_before_game1: 'Discussion before Game 1',
+  game1: 'Game 1',
+  discussion_after_game1: 'Discussion after Game 1',
+  game2_prep: 'Game 2 Prep',
+  game2: 'Game 2',
+};
+
+/** Which section of the plan a phase belongs to. The leaderboard has no time budget. */
+export function sectionForPhase(
+  phase: ActivityPhase,
+  scoringEnabled: boolean,
+  discussionTopic: DiscussionTopic | null,
+): SectionId | null {
+  switch (phase) {
+    case 'lobby':
+      return 'joining';
+    case 'training':
+      return 'training';
+    case 'straight':
+      return scoringEnabled ? 'game1' : 'game1_prep';
+    case 'freewater':
+      return scoringEnabled ? 'game2' : 'game2_prep';
+    case 'discussion':
+      return discussionTopic === 'after_game1' ? 'discussion_after_game1' : 'discussion_before_game1';
+    case 'leaderboard':
+      return null;
+  }
+}
+
+/** Section clock text: "3:07" while there is time left, "-0:42" once the section has overrun. */
+export function formatSectionClock(remainingMs: number): string {
+  const over = remainingMs < 0;
+  // Count down on the ceiling (4:00 shows for a full second) and up on the floor (-0:01 after one second over)
+  const totalSec = over ? Math.floor(-remainingMs / 1000) : Math.ceil(remainingMs / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${over && totalSec > 0 ? '-' : ''}${mins}:${secs.toString().padStart(2, '0')}`;
+}

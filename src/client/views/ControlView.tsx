@@ -5,22 +5,79 @@ import {
   MAX_TEAM_SIZE_LIMIT,
   MAX_TOTAL_PLAYERS,
   MIN_TEAM_SIZE_LIMIT,
+  describePhase,
+  SECTION_LABELS,
+  formatSectionClock,
 } from '../../shared/constants.js';
 import type {
   AckResponse,
   HostCommandPayload,
   HostPrivateSnapshot,
   NetworkPresentationMode,
+  SectionId,
 } from '../../shared/types.js';
 import { createPondSocket, makeCommandId } from '../socketClient.js';
 
 const HOST_AUTH_SESSION_KEY = 'cs260b_host_passcode';
 
-type StagedTargetOption =
-  | 'training'
-  | 'straight'
-  | 'freewater_practice'
-  | 'freewater_scored';
+type LoadPhaseArgs = Omit<Extract<HostCommandPayload, { type: 'load_phase' }>, 'commandId' | 'type'>;
+
+function formatLimit(sec: number): string {
+  return sec % 60 === 0 ? `${sec / 60} min` : `${sec}s`;
+}
+
+/**
+ * The session in running order. `section` names the step's slot in the session plan; its planned
+ * time is shown beside the label from the live server values. Nothing is sent with the load
+ * command: the server starts that section's clock, which ends Game 1 and Game 2 at zero.
+ * `load: null` is the how-to-play guide, an overlay rather than a phase.
+ */
+const SESSION_STEPS: ReadonlyArray<{
+  id: string;
+  label: string;
+  section: SectionId | null;
+  load: LoadPhaseArgs | null;
+}> = [
+  { id: 'guide', label: 'Explanation: How to Play', section: 'joining', load: null },
+  { id: 'training', label: 'Training (Team Card Grid)', section: 'training', load: { phase: 'training' } },
+  {
+    id: 'straight_practice',
+    label: 'Game 1 Prep: Straight Swim Practice',
+    section: 'game1_prep',
+    load: { phase: 'straight', scoringEnabled: false },
+  },
+  {
+    id: 'discussion_before_game1',
+    label: 'Discussion: What Makes You Fast?',
+    section: 'discussion_before_game1',
+    load: { phase: 'discussion', discussionTopic: 'before_game1' },
+  },
+  {
+    id: 'straight',
+    label: 'Game 1: Straight Swim Race',
+    section: 'game1',
+    load: { phase: 'straight', scoringEnabled: true },
+  },
+  {
+    id: 'discussion_after_game1',
+    label: 'Discussion: After Game 1',
+    section: 'discussion_after_game1',
+    load: { phase: 'discussion', discussionTopic: 'after_game1' },
+  },
+  {
+    id: 'freewater_practice',
+    label: 'Game 2 Prep: Free-Water Practice',
+    section: 'game2_prep',
+    load: { phase: 'freewater', scoringEnabled: false },
+  },
+  {
+    id: 'freewater_scored',
+    label: 'Game 2: Scored Pond Harvest',
+    section: 'game2',
+    load: { phase: 'freewater', scoringEnabled: true },
+  },
+  { id: 'leaderboard', label: 'Leaderboard: Session Results', section: null, load: { phase: 'leaderboard' } },
+];
 
 function formatClock(ms: number): string {
   const totalSec = Math.max(0, Math.round(ms / 1000));
@@ -42,8 +99,14 @@ export const ControlView: React.FC = () => {
   const [feedbackBanner, setFeedbackBanner] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Controls form state
-  const [phaseChoice, setPhaseChoice] = useState<StagedTargetOption>('training');
-  const [durationDraftSec, setDurationDraftSec] = useState<number>(GAME_DEFAULTS.straightRaceDurationSec);
+  const [phaseChoice, setPhaseChoice] = useState<string>(SESSION_STEPS[0].id);
+  // Planned time for the section on screen, edited as minutes and seconds
+  const [budgetDraft, setBudgetDraft] = useState<{ section: SectionId | null; min: number; sec: number }>({
+    section: null,
+    min: 0,
+    sec: 0,
+  });
+  const lastSyncedBudgetRef = useRef<{ section: SectionId | null; budgetSec: number }>({ section: null, budgetSec: -1 });
   const [pendingStartOverride, setPendingStartOverride] = useState(false);
   const [confirmClearModal, setConfirmClearModal] = useState(false);
 
@@ -77,8 +140,18 @@ export const ControlView: React.FC = () => {
 
     sock.on('host.snapshot', (next: HostPrivateSnapshot) => {
       setHostSnap(next);
-      if (next.session.round.durationSec > 0) {
-        setDurationDraftSec(next.session.round.durationSec);
+      // Refill the planned-time fields only when the section or its saved value changes, never while typing
+      const clock = next.session.sectionClock;
+      if (
+        lastSyncedBudgetRef.current.section !== clock.section ||
+        lastSyncedBudgetRef.current.budgetSec !== clock.budgetSec
+      ) {
+        lastSyncedBudgetRef.current = { section: clock.section, budgetSec: clock.budgetSec };
+        setBudgetDraft({
+          section: clock.section,
+          min: Math.floor(clock.budgetSec / 60),
+          sec: clock.budgetSec % 60,
+        });
       }
       if (
         lastSyncedBoundsRef.current.min !== next.session.minTeamSize ||
@@ -177,41 +250,28 @@ export const ControlView: React.FC = () => {
   const qrSrc = `/api/qr?url=${encodeURIComponent(playUrl)}`;
 
   const handleLoadSelectedPhase = () => {
-    if (phaseChoice === 'training') {
-      sendCommand((commandId) => ({
-        commandId,
-        type: 'load_phase',
-        phase: 'training',
-        scoringEnabled: false,
-      }));
-    } else if (phaseChoice === 'straight') {
-      sendCommand((commandId) => ({
-        commandId,
-        type: 'load_phase',
-        phase: 'straight',
-        scoringEnabled: true,
-        durationSec: GAME_DEFAULTS.straightRaceDurationSec,
-      }));
-    } else if (phaseChoice === 'freewater_practice') {
-      sendCommand((commandId) => ({
-        commandId,
-        type: 'load_phase',
-        phase: 'freewater',
-        scoringEnabled: false,
-        durationSec: GAME_DEFAULTS.freewaterPracticeDurationSec,
-      }));
+    const step = SESSION_STEPS.find((st) => st.id === phaseChoice);
+    if (!step) return;
+    const { load } = step;
+    if (load === null) {
+      sendCommand((commandId) => ({ commandId, type: 'set_guide_visible', visible: true }));
     } else {
-      sendCommand((commandId) => ({
-        commandId,
-        type: 'load_phase',
-        phase: 'freewater',
-        scoringEnabled: true,
-        durationSec: GAME_DEFAULTS.freewaterScoredDurationSec,
-      }));
+      sendCommand((commandId) => ({ commandId, type: 'load_phase', ...load }));
     }
   };
 
-  const canChangeModeOrDuration =
+  const isGamePhase = session.phase === 'straight' || session.phase === 'freewater';
+  const isDisplayOnlyPhase = session.phase === 'discussion' || session.phase === 'leaderboard';
+  const scoredRoundActive =
+    isGamePhase &&
+    session.round.scoringEnabled &&
+    (session.runStatus === 'running' || session.runStatus === 'countdown');
+  const phaseLabel = describePhase(session.phase, session.round.scoringEnabled);
+  const sectionClock = session.sectionClock;
+  const isScoredRound = isGamePhase && session.round.scoringEnabled;
+  const sectionOver = sectionClock.section !== null && sectionClock.remainingMs <= 0;
+
+  const canChangeNetworkMode =
     session.runStatus === 'ready' ||
     session.runStatus === 'paused' ||
     session.runStatus === 'finished';
@@ -222,24 +282,31 @@ export const ControlView: React.FC = () => {
       <header className="screen-header">
         <div className="screen-title-group">
           <h1 className="screen-title">Mission Control</h1>
-          <span className="pill pill-ready">Phase: {session.phase}</span>
-          <span
-            className={`pill ${
-              session.runStatus === 'running'
-                ? 'pill-running'
-                : session.runStatus === 'paused'
-                  ? 'pill-paused'
-                  : 'pill-ready'
-            }`}
-          >
-            Status: {session.runStatus}
-          </span>
-          <span className="pill">
-            Active: {formatClock(session.round.activeElapsedMs)}
-            {session.round.durationSec > 0
-              ? ` · Rem: ${formatClock(session.round.remainingMs)}`
-              : ''}
-          </span>
+          <span className="pill pill-ready">Phase: {phaseLabel}</span>
+          {session.guideVisible && <span className="pill pill-running">Guide on screen</span>}
+          {session.musicEnabled && <span className="pill pill-running">Music on</span>}
+          {!isDisplayOnlyPhase && (
+            <span
+              className={`pill ${
+                session.runStatus === 'running'
+                  ? 'pill-running'
+                  : session.runStatus === 'paused'
+                    ? 'pill-paused'
+                    : 'pill-ready'
+              }`}
+            >
+              Status: {session.runStatus}
+            </span>
+          )}
+          {sectionClock.section !== null && (
+            <span className={`pill ${sectionOver ? 'pill-danger' : ''}`}>
+              {SECTION_LABELS[sectionClock.section]}:{' '}
+              {sectionClock.running
+                ? `${formatSectionClock(sectionClock.remainingMs)}${sectionOver ? ' over' : ' left'}`
+                : `${formatSectionClock(sectionClock.remainingMs)} (clock not started)`}
+            </span>
+          )}
+          {isGamePhase && <span className="pill">Round time: {formatClock(session.round.activeElapsedMs)}</span>}
         </div>
 
         <div className="btn-row">
@@ -287,23 +354,25 @@ export const ControlView: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <section className="control-panel">
             <h2>1. Phase &amp; Clock Controls</h2>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               <select
                 className="field-select"
-                style={{ flex: 1 }}
+                style={{ width: '100%' }}
                 value={phaseChoice}
-                onChange={(e) => setPhaseChoice(e.target.value as StagedTargetOption)}
+                onChange={(e) => setPhaseChoice(e.target.value)}
                 aria-label="Select phase to stage"
               >
-                <option value="training">Training (Team Card Grid)</option>
-                <option value="straight">Game 1: Straight Swim Race (90s)</option>
-                <option value="freewater_practice">Game 2 Prep: Free-Water Practice (20s)</option>
-                <option value="freewater_scored">Game 2: Scored Pond Harvest (90s)</option>
+                {SESSION_STEPS.map((st, i) => (
+                  <option key={st.id} value={st.id}>
+                    {i + 1}. {st.section ? `${formatLimit(session.sectionBudgetsSec[st.section])} · ` : ''}
+                    {st.label}
+                  </option>
+                ))}
               </select>
               <button
                 type="button"
                 className="btn-secondary"
-                style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                style={{ alignSelf: 'flex-start', whiteSpace: 'nowrap' }}
                 onClick={handleLoadSelectedPhase}
               >
                 Load Phase
@@ -311,7 +380,7 @@ export const ControlView: React.FC = () => {
             </div>
 
             <div className="btn-row">
-              {session.runStatus === 'ready' && session.phase !== 'lobby' && (
+              {session.runStatus === 'ready' && session.phase !== 'lobby' && !isDisplayOnlyPhase && (
                 <button
                   type="button"
                   className="btn-primary"
@@ -323,39 +392,23 @@ export const ControlView: React.FC = () => {
                     }))
                   }
                 >
-                  Start {session.phase === 'training' ? 'Training' : 'Round'}
+                  Start {phaseLabel}
                 </button>
               )}
 
               {(session.runStatus === 'running' || session.runStatus === 'countdown') && (
-                <>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() =>
-                      sendCommand((commandId) => ({
-                        commandId,
-                        type: 'pause_phase',
-                        forDiscussion: false,
-                      }))
-                    }
-                  >
-                    Pause
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() =>
-                      sendCommand((commandId) => ({
-                        commandId,
-                        type: 'pause_phase',
-                        forDiscussion: true,
-                      }))
-                    }
-                  >
-                    Pause for Discussion
-                  </button>
-                </>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() =>
+                    sendCommand((commandId) => ({
+                      commandId,
+                      type: 'pause_phase',
+                    }))
+                  }
+                >
+                  Pause
+                </button>
               )}
 
               {session.runStatus === 'paused' && (
@@ -373,7 +426,7 @@ export const ControlView: React.FC = () => {
                 </button>
               )}
 
-              {session.phase !== 'lobby' && session.runStatus !== 'finished' && (
+              {session.phase !== 'lobby' && !isDisplayOnlyPhase && session.runStatus !== 'finished' && (
                 <button
                   type="button"
                   className="btn-subtle"
@@ -388,6 +441,13 @@ export const ControlView: React.FC = () => {
                 </button>
               )}
             </div>
+
+            {isDisplayOnlyPhase && (
+              <p style={{ margin: 0, fontSize: '0.83rem', color: 'var(--ink-secondary)' }}>
+                {phaseLabel} is showing on the classroom display. There is nothing to start; load the
+                next phase when the room is ready.
+              </p>
+            )}
 
             {/* Readiness Warning Override Confirmation */}
             {pendingStartOverride && readinessWarnings.length > 0 && (
@@ -423,54 +483,71 @@ export const ControlView: React.FC = () => {
               </div>
             )}
 
-            {/* Round Duration Control (editable while staged or paused) */}
-            {(session.phase === 'straight' || session.phase === 'freewater') && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
-                <label htmlFor="round-dur-input" style={{ fontSize: '0.86rem' }}>
-                  Duration (s):
-                </label>
-                <input
-                  id="round-dur-input"
-                  type="number"
-                  min={15}
-                  max={300}
-                  className="field-input"
-                  style={{ width: 88, padding: '0.32rem 0.5rem' }}
-                  disabled={!canChangeModeOrDuration}
-                  value={durationDraftSec}
-                  onChange={(e) => setDurationDraftSec(Number(e.target.value))}
-                />
-                <button
-                  type="button"
-                  className="btn-subtle btn-xs"
-                  disabled={!canChangeModeOrDuration}
-                  onClick={() =>
-                    sendCommand((commandId) => ({
-                      commandId,
-                      type: 'set_round_duration',
-                      durationSec: durationDraftSec,
-                    }))
-                  }
-                >
-                  Apply Duration
-                </button>
-                {session.phase === 'freewater' && session.round.scoringEnabled && (
+            {/* Section clock: ends the two scored games at zero, paces everything else */}
+            {sectionClock.section !== null && (
+              <div className="section-clock-control">
+                <span style={{ fontSize: '0.86rem' }}>
+                  Planned time for <strong>{SECTION_LABELS[sectionClock.section]}</strong>
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="number"
+                    min={0}
+                    max={60}
+                    className="field-input"
+                    style={{ width: 62, padding: '0.32rem 0.5rem' }}
+                    aria-label="Planned minutes"
+                    value={budgetDraft.min}
+                    onChange={(e) => setBudgetDraft((d) => ({ ...d, min: Number(e.target.value) }))}
+                  />
+                  <span style={{ fontSize: '0.86rem' }}>min</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    className="field-input"
+                    style={{ width: 62, padding: '0.32rem 0.5rem' }}
+                    aria-label="Planned seconds"
+                    value={budgetDraft.sec}
+                    onChange={(e) => setBudgetDraft((d) => ({ ...d, sec: Number(e.target.value) }))}
+                  />
+                  <span style={{ fontSize: '0.86rem' }}>s</span>
                   <button
                     type="button"
                     className="btn-subtle btn-xs"
-                    disabled={!canChangeModeOrDuration}
                     onClick={() => {
-                      setDurationDraftSec(60);
+                      const section = sectionClock.section;
+                      if (!section) return;
                       sendCommand((commandId) => ({
                         commandId,
-                        type: 'set_round_duration',
-                        durationSec: 60,
+                        type: 'set_section_budget',
+                        section,
+                        budgetSec: Math.round(budgetDraft.min) * 60 + Math.round(budgetDraft.sec),
                       }));
                     }}
                   >
-                    60s Preset
+                    Apply
                   </button>
-                )}
+                  <button
+                    type="button"
+                    className="btn-subtle btn-xs"
+                    onClick={() =>
+                      sendCommand((commandId) => ({
+                        commandId,
+                        type: 'restart_section_clock',
+                      }))
+                    }
+                  >
+                    {sectionClock.running ? 'Restart Clock' : 'Start Clock'}
+                  </button>
+                </div>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
+                  The clock starts when a phase is loaded
+                  {session.phase === 'lobby' ? ' (here: when the first player joins, or when you press Start Clock)' : ''}.{' '}
+                  {isScoredRound
+                    ? 'At zero this game ends. Changing the planned time or restarting the clock moves that moment.'
+                    : 'At zero it turns red and counts into the minus; this section does not end until you move on. Only Game 1 and Game 2 end at zero.'}
+                </p>
               </div>
             )}
           </section>
@@ -487,7 +564,7 @@ export const ControlView: React.FC = () => {
                 <button
                   key={mode}
                   type="button"
-                  disabled={!canChangeModeOrDuration}
+                  disabled={!canChangeNetworkMode}
                   aria-pressed={session.networkMode === mode}
                   className={session.networkMode === mode ? 'btn-primary btn-xs' : 'btn-subtle btn-xs'}
                   onClick={() =>
@@ -549,7 +626,8 @@ export const ControlView: React.FC = () => {
               </div>
               <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
                 Covers the classroom display with joining steps, the motion-permission reminder, the
-                six sweeps, and the game idea. It hides itself when a phase starts or resumes.
+                six sweeps, and the game idea. A fresh session opens on it; it hides itself when you
+                load, start, or resume a phase.
               </p>
               <div className="btn-row" style={{ alignItems: 'center' }}>
                 <button
@@ -578,6 +656,37 @@ export const ControlView: React.FC = () => {
 
             <div style={{ borderTop: '2px dashed var(--border-strong)', paddingTop: '0.7rem' }}>
               <div style={{ fontSize: '0.84rem', fontWeight: 650, marginBottom: '0.35rem' }}>
+                Background Music on Classroom Display
+              </div>
+              <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
+                Party-style music from the classroom display's speakers: a relaxed tune between
+                rounds, a faster one during countdowns and live rounds, silence during discussions.
+                Phones stay quiet. The display's browser needs one click on its page before it is
+                allowed to play sound; it shows a button when it is waiting for that.
+              </p>
+              <div className="btn-row" style={{ alignItems: 'center' }}>
+                <button
+                  type="button"
+                  aria-pressed={session.musicEnabled}
+                  className={session.musicEnabled ? 'btn-primary btn-xs' : 'btn-secondary btn-xs'}
+                  onClick={() =>
+                    sendCommand((commandId) => ({
+                      commandId,
+                      type: 'set_music_enabled',
+                      enabled: !session.musicEnabled,
+                    }))
+                  }
+                >
+                  {session.musicEnabled ? 'Turn Music Off' : 'Turn Music On'}
+                </button>
+                <span className={`pill ${session.musicEnabled ? 'pill-running' : ''}`}>
+                  {session.musicEnabled ? 'Music on' : 'Music off'}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ borderTop: '2px dashed var(--border-strong)', paddingTop: '0.7rem' }}>
+              <div style={{ fontSize: '0.84rem', fontWeight: 650, marginBottom: '0.35rem' }}>
                 Universal Team Size Range (Auto-configures per joined team)
               </div>
               <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
@@ -591,11 +700,7 @@ export const ControlView: React.FC = () => {
                     className="field-select"
                     style={{ padding: '0.24rem 0.45rem', fontSize: '0.85rem' }}
                     value={minTeamSizeDraft}
-                    disabled={
-                      (session.phase === 'straight' ||
-                        (session.phase === 'freewater' && session.round.scoringEnabled)) &&
-                      (session.runStatus === 'running' || session.runStatus === 'countdown')
-                    }
+                    disabled={scoredRoundActive}
                     onChange={(e) => {
                       const nextMin = Number(e.target.value);
                       setMinTeamSizeDraft(nextMin);
@@ -621,11 +726,7 @@ export const ControlView: React.FC = () => {
                     className="field-select"
                     style={{ padding: '0.24rem 0.45rem', fontSize: '0.85rem' }}
                     value={maxTeamSizeDraft}
-                    disabled={
-                      (session.phase === 'straight' ||
-                        (session.phase === 'freewater' && session.round.scoringEnabled)) &&
-                      (session.runStatus === 'running' || session.runStatus === 'countdown')
-                    }
+                    disabled={scoredRoundActive}
                     onChange={(e) => {
                       const nextMax = Number(e.target.value);
                       setMaxTeamSizeDraft(nextMax);
@@ -689,7 +790,7 @@ export const ControlView: React.FC = () => {
                 Reset Practice: All Teams (Keep Cal &amp; Seats)
               </button>
 
-              {(session.phase === 'straight' || session.phase === 'freewater') && (
+              {isGamePhase && (
                 <button
                   type="button"
                   className="btn-subtle btn-xs"
@@ -853,14 +954,19 @@ export const ControlView: React.FC = () => {
                       </thead>
                       <tbody>
                         {teamPlayers.map((p) => (
-                          <tr key={p.playerId}>
+                          <tr key={p.playerId} style={p.seated ? undefined : { opacity: 0.55 }}>
                             <td>
                               <strong>{p.playerName}</strong> · {p.limbLabel}
                               {p.held ? ' (Held)' : ''}
                             </td>
                             <td>{p.gestureInstruction}</td>
                             <td>
-                              {p.connected ? 'Online' : 'Offline'} · {p.sensorStatus}
+                              {p.connected
+                                ? 'Online'
+                                : p.seated
+                                  ? 'Offline (limb held briefly)'
+                                  : 'Away (returns on reconnect)'}{' '}
+                              · {p.sensorStatus}
                             </td>
                             <td>{p.calibrated ? `Yes (v${p.calibrationVersion})` : 'No'}</td>
                             <td>

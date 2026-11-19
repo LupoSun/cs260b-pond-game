@@ -143,6 +143,7 @@ export const CreatureCardCanvas: React.FC<CreatureCardCanvasProps> = ({
             localFocusLimbHeld: curHeld,
             localFocusLimbProgress: curProg,
             showLimbLabels: true,
+            labelBounds: { minX: 4, minY: 4, maxX: w - 4, maxY: h - 6 },
             isPaused: curPaused,
           });
 

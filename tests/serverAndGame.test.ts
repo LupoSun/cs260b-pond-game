@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { ClassroomGameSession } from '../src/server/gameSession.js';
-import type { CalibrationSummary, HostCommandPayload, PlayerPrivateSeat } from '../src/shared/types.js';
+import {
+  GAME_DEFAULTS,
+  POND_ITEMS,
+  SECTION_BUDGET_DEFAULTS_SEC,
+  SECTION_ORDER,
+  formatSectionClock,
+  getSyncMultiplier,
+  sectionForPhase,
+} from '../src/shared/constants.js';
+import type {
+  AckResponse,
+  CalibrationSummary,
+  HostCommandPayload,
+  PlayerPrivateSeat,
+} from '../src/shared/types.js';
 
 function makeValidCal(version = 1): CalibrationSummary {
   return {
@@ -39,6 +53,30 @@ function joinAndCalibrate(
   };
 }
 
+/** Submits one completed stroke against the session's current round, epoch, and the seat's calibration. */
+function stroke(
+  session: ClassroomGameSession,
+  socketId: string,
+  seat: PlayerPrivateSeat,
+  uniqueId: string,
+): AckResponse<{ strokeId: string }> {
+  const snap = session.getPublicSnapshot();
+  return session.handleStrokeComplete(socketId, {
+    strokeId: `stk_${uniqueId}`,
+    attemptId: `att_${uniqueId}`,
+    attemptSeq: 1,
+    sessionId: snap.sessionId,
+    roundId: snap.round.roundId,
+    inputEpoch: snap.inputEpoch,
+    connectionGeneration: seat.connectionGeneration,
+    calibrationVersion: seat.calibrationVersion,
+    gestureId: seat.assignment.gestureId,
+    inputMethod: 'physical_sweep',
+    durationMs: 300,
+    clientCompletedAtMs: snap.serverNowMs,
+  });
+}
+
 describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped Resets', () => {
   it('requires a nickname at join, sanitizes it, and keeps it across reconnect', () => {
     const session = new ClassroomGameSession();
@@ -57,18 +95,24 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     expect(resumed.data!.playerName).toBe('Sam the Extremel');
   });
 
-  it('toggles the classroom guide by host command and hides it when a phase starts', () => {
+  it('opens a fresh session on the guide, toggles it by host command, and hides it when a phase loads or starts', () => {
     const session = new ClassroomGameSession();
-    expect(session.getPublicSnapshot().guideVisible).toBe(false);
+    expect(session.getPublicSnapshot().guideVisible).toBe(true);
 
     const show = (visible: boolean, id: string) =>
       session.executeHostCommand({ commandId: id, type: 'set_guide_visible', visible });
 
+    expect(show(false, 'g0').ok).toBe(true);
+    expect(session.getPublicSnapshot().guideVisible).toBe(false);
     expect(show(true, 'g1').ok).toBe(true);
     expect(session.getPublicSnapshot().guideVisible).toBe(true);
 
+    // Loading a phase puts that phase on the display, so the guide steps aside
     session.executeHostCommand({ commandId: 'g2', type: 'load_phase', phase: 'training' });
-    expect(session.getPublicSnapshot().guideVisible).toBe(true);
+    expect(session.getPublicSnapshot().guideVisible).toBe(false);
+
+    // It can be brought back while the phase is only staged, and starting hides it again
+    expect(show(true, 'g2b').ok).toBe(true);
     session.executeHostCommand({ commandId: 'g3', type: 'start_phase' });
     expect(session.getPublicSnapshot().runStatus).toBe('running');
     expect(session.getPublicSnapshot().guideVisible).toBe(false);
@@ -321,14 +365,14 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     expect(secondOnSamePress.ok).toBe(false);
     expect(secondOnSamePress.code).toBe('ALREADY_SCORED_THIS_PRESS');
 
-    // Pause for 20 seconds -> remaining time MUST NOT change, and pre-pause inputEpoch is invalidated after resume!
+    // Pause for 20 seconds -> active round time MUST NOT advance, and pre-pause inputEpoch is invalidated after resume!
     const prePauseEpoch = runningSnap.inputEpoch;
-    const remBeforePause = session.getPublicSnapshot().round.remainingMs;
+    const activeBeforePause = session.getPublicSnapshot().round.activeElapsedMs;
     session.executeHostCommand({ commandId: 'c3', type: 'pause_phase' });
 
     nowMs += 20000;
     session.stepSimulation(20000);
-    expect(session.getPublicSnapshot().round.remainingMs).toBe(remBeforePause);
+    expect(session.getPublicSnapshot().round.activeElapsedMs).toBe(activeBeforePause);
 
     session.executeHostCommand({ commandId: 'c4', type: 'resume_phase' });
     const resumedSnap = session.getPublicSnapshot();
@@ -438,8 +482,12 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
       clientCompletedAtMs: nowMs,
     });
 
-    // Must still be baseCycleForwardImpulse / 5 (3.6), NOT / 4 (4.5)!
-    expect(session.getPublicSnapshot().teams[4].sim.vx).toBeCloseTo(18.0 / 5, 5);
+    // A lone straight-swim stroke is priced on the 5 joined limbs (N stays 5, never 4) at the
+    // out-of-sync multiplier; losing a teammate must not raise it.
+    expect(session.getPublicSnapshot().teams[4].sim.vx).toBeCloseTo(
+      (GAME_DEFAULTS.baseCycleForwardImpulse / 5) * GAME_DEFAULTS.syncMinMultiplier,
+      5,
+    );
   });
 
   it('preserves exact scoring equivalence between continuous and stroke_events network modes', () => {
@@ -539,8 +587,12 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     const updatedItem = after.round.items.find((i) => i.itemId === firstItem.itemId)!;
     expect(updatedItem.available).toBe(false);
     expect(updatedItem.collectedByTeam).toBe(1); // Exact distance tie broken deterministically by teamNumber 1 < 2
-    expect(after.teams[0].sim.score).toBe(1);
+    // The item's own point value is awarded exactly once, to one team
+    expect(firstItem.points).toBe(POND_ITEMS[firstItem.variant].points);
+    expect(after.teams[0].sim.score).toBe(firstItem.points);
+    expect(after.teams[0].sim.itemsCollected).toBe(1);
     expect(after.teams[1].sim.score).toBe(0);
+    expect(after.teams[1].sim.itemsCollected).toBe(0);
   });
 
   it('ranks finished teams by finish time, unfinished teams by distance on timeout, and preserves scoped resets', () => {
@@ -592,7 +644,7 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     expect(recalRes.ok).toBe(true);
     const p1NewCalVer = recalRes.data!.calibrationVersion;
 
-    // Straight race timeout ranking check (90s limit so Team 1 finishes and Team 2/3 time out)
+    // Straight race ranking when the facilitator ends it: Team 1 finishes, Teams 2 and 3 do not
     const p1b = joinAndCalibrate(session, 's1_b', 1);
     const p1c = joinAndCalibrate(session, 's1_c', 1);
     const p1d = joinAndCalibrate(session, 's1_d', 1);
@@ -601,7 +653,6 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
       commandId: 'sr1',
       type: 'load_phase',
       phase: 'straight',
-      durationSec: 90,
     });
     session.executeHostCommand({
       commandId: 'sr2',
@@ -655,11 +706,15 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
       }
       nowMs += 100;
       session.stepSimulation(100);
-      if (session.getPublicSnapshot().runStatus === 'finished') break;
     }
+
+    // 100 s in, with two creatures still out: nothing ends the race but the facilitator
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.executeHostCommand({ commandId: 'sr_end', type: 'end_round' }).ok).toBe(true);
 
     const fin = session.getPublicSnapshot();
     expect(fin.runStatus).toBe('finished');
+    expect(fin.leaderboard.straight?.endedBy).toBe('facilitator');
     expect(fin.teams[0].sim.finished).toBe(true);
     expect(fin.teams[0].sim.rank).toBe(1);
     expect(fin.teams[1].sim.finished).toBe(false);
@@ -667,5 +722,904 @@ describe('Section 14.2 — Authoritative Server, Normalization, Scoring & Scoped
     expect(fin.teams[2].sim.finished).toBe(false);
     expect(fin.teams[2].sim.rank).toBe(3);
     expect(fin.teams).toHaveLength(3);
+  });
+});
+
+describe('Random gesture assignment', () => {
+  it('gives teammates different gestures and does not tie a gesture to team number or join order', () => {
+    const firstGestureOfTeamOne = new Set<string>();
+    for (let run = 0; run < 40; run++) {
+      const session = new ClassroomGameSession();
+      session.executeHostCommand({
+        commandId: `sz_${run}`,
+        type: 'set_team_size_bounds',
+        minTeamSize: 3,
+        maxTeamSize: 6,
+      });
+      const gestures: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        gestures.push(joinAndCalibrate(session, `rg_${run}_${i}`, 1).assignment.gestureId);
+      }
+      // Six limbs, six gestures in the vocabulary: every teammate has a different sweep
+      expect(new Set(gestures).size).toBe(6);
+      firstGestureOfTeamOne.add(gestures[0]);
+    }
+    // The old rule gave Team 1's first player the same gesture every time. A fixed result over
+    // 40 independent sessions now has probability 6^-39.
+    expect(firstGestureOfTeamOne.size).toBeGreaterThan(1);
+  });
+});
+
+describe('Session flow v0.2 — sync propulsion, race ending, prep, discussion, and leaderboard phases', () => {
+  const BASE = GAME_DEFAULTS.baseCycleForwardImpulse;
+
+  /** One team of `size` calibrated players in a running scored straight race; time is driven by the returned clock. */
+  function startRaceWithTeam(size: number, mode: 'continuous' | 'stroke_events' = 'continuous') {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const seats = Array.from({ length: size }, (_, i) => joinAndCalibrate(session, `p${i}`, 1));
+    session.executeHostCommand({ commandId: 'mode', type: 'set_network_mode', networkMode: mode });
+    session.executeHostCommand({ commandId: 'load', type: 'load_phase', phase: 'straight' });
+    session.executeHostCommand({ commandId: 'start', type: 'start_phase', overrideWarnings: true });
+    clock.nowMs += 3000;
+    session.stepSimulation(3000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    const vx = () => session.getPublicSnapshot().teams[0].sim.vx;
+    return { session, seats, clock, vx };
+  }
+
+  it('Game 1: the more limbs stroke together the faster, and unsynchronized strokes are penalized', () => {
+    // No simulation steps between strokes, so vx is exactly the propulsion granted so far.
+    const speedWithLimbsTogether = (together: number): number => {
+      const { session, seats, clock, vx } = startRaceWithTeam(4);
+      for (let i = 0; i < together; i++) {
+        clock.nowMs += 40; // well inside the sync window
+        expect(stroke(session, `p${i}`, seats[i], `sync_${i}`).ok).toBe(true);
+      }
+      return vx();
+    };
+
+    const [one, two, three, four] = [1, 2, 3, 4].map(speedWithLimbsTogether);
+    expect(one).toBeCloseTo((BASE / 4) * GAME_DEFAULTS.syncMinMultiplier, 6);
+    expect(two).toBeCloseTo(2 * (BASE / 4) * getSyncMultiplier(2, 4), 6);
+    expect(three).toBeCloseTo(3 * (BASE / 4) * getSyncMultiplier(3, 4), 6);
+    expect(four).toBeCloseTo(BASE * GAME_DEFAULTS.syncMaxMultiplier, 6);
+    expect(one).toBeLessThan(two);
+    expect(two).toBeLessThan(three);
+    expect(three).toBeLessThan(four);
+
+    // The same four strokes spread outside the window earn only the out-of-sync rate each
+    const { session, seats, clock, vx } = startRaceWithTeam(4);
+    for (let i = 0; i < 4; i++) {
+      clock.nowMs += GAME_DEFAULTS.syncWindowMs + 50;
+      expect(stroke(session, `p${i}`, seats[i], `apart_${i}`).ok).toBe(true);
+    }
+    expect(vx()).toBeCloseTo(BASE * GAME_DEFAULTS.syncMinMultiplier, 6);
+    expect(vx()).toBeLessThan(four / 4);
+    expect(session.getPublicSnapshot().teams[0].sim.syncCount).toBe(1);
+  });
+
+  it('Game 1: a fully synchronized cycle is worth the same for every team size and in both network modes', () => {
+    const fullSyncSpeed = (size: number, mode: 'continuous' | 'stroke_events'): number => {
+      const { session, seats, clock, vx } = startRaceWithTeam(size, mode);
+      // Reverse arrival order: the group total must not depend on who lands first
+      for (let i = size - 1; i >= 0; i--) {
+        clock.nowMs += 30;
+        stroke(session, `p${i}`, seats[i], `full_${i}`);
+      }
+      expect(session.getPublicSnapshot().teams[0].sim.syncCount).toBe(size);
+      return vx();
+    };
+
+    for (const size of [1, 2, 3, 4, 5, 6]) {
+      expect(fullSyncSpeed(size, 'continuous')).toBeCloseTo(BASE * GAME_DEFAULTS.syncMaxMultiplier, 6);
+      expect(fullSyncSpeed(size, 'stroke_events')).toBeCloseTo(fullSyncSpeed(size, 'continuous'), 9);
+    }
+  });
+
+  it('Game 1: a disconnected teammate lowers the reachable sync and never adds power', () => {
+    const { session, seats, clock, vx } = startRaceWithTeam(4);
+    session.handleSocketDisconnect('p3');
+    expect(session.getPublicSnapshot().teams[0].limbCount).toBe(4);
+
+    for (let i = 0; i < 3; i++) {
+      clock.nowMs += 30;
+      stroke(session, `p${i}`, seats[i], `three_${i}`);
+    }
+    // Three of four joined limbs: priced as 3-of-4, strictly below the full-team cycle
+    expect(vx()).toBeCloseTo(3 * (BASE / 4) * getSyncMultiplier(3, 4), 6);
+    expect(vx()).toBeLessThan(BASE * GAME_DEFAULTS.syncMaxMultiplier);
+  });
+
+  it('Game 1 keeps running after the first finisher and ends only when the last creature is home', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const a = joinAndCalibrate(session, 'a', 1);
+    const b = joinAndCalibrate(session, 'b', 2);
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'straight' });
+    session.executeHostCommand({ commandId: 's', type: 'start_phase', overrideWarnings: true });
+    clock.nowMs += 3000;
+    session.stepSimulation(3000);
+
+    const swim = (sockId: string, seat: PlayerPrivateSeat, teamIdx: number, tag: string) => {
+      for (let k = 0; k < 400 && !session.getPublicSnapshot().teams[teamIdx].sim.finished; k++) {
+        stroke(session, sockId, seat, `${tag}_${k}`);
+        for (let t = 0; t < 5; t++) {
+          clock.nowMs += 100;
+          session.stepSimulation(100);
+        }
+      }
+    };
+
+    swim('a', a, 0, 'a');
+    const afterFirst = session.getPublicSnapshot();
+    expect(afterFirst.teams[0].sim.finished).toBe(true);
+    expect(afterFirst.teams[0].sim.rank).toBe(1);
+    // First creature home: the race is still on for everyone else
+    expect(afterFirst.runStatus).toBe('running');
+    expect(afterFirst.leaderboard.straight).toBeNull();
+
+    swim('b', b, 1, 'b');
+    const afterLast = session.getPublicSnapshot();
+    expect(afterLast.teams[1].sim.finished).toBe(true);
+    expect(afterLast.teams[1].sim.rank).toBe(2);
+    expect(afterLast.runStatus).toBe('finished');
+    expect(afterLast.leaderboard.straight?.endedBy).toBe('all_finished');
+  });
+
+  it('Game 1 ends when its section clock reaches zero, with unfinished creatures ranked by distance', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'straight' });
+    session.executeHostCommand({ commandId: 's', type: 'start_phase', overrideWarnings: true });
+    clock.nowMs += 3000;
+    session.stepSimulation(3000);
+
+    // The clock started at load, so the 3 s countdown came out of the planned time
+    const plannedMs = SECTION_BUDGET_DEFAULTS_SEC.game1 * 1000;
+    for (let t = 3000; t < plannedMs - 1000; t += 1000) {
+      clock.nowMs += 1000;
+      session.stepSimulation(1000);
+    }
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(1000);
+
+    clock.nowMs += 1000;
+    session.stepSimulation(1000);
+    const done = session.getPublicSnapshot();
+    expect(done.runStatus).toBe('finished');
+    expect(done.teams[0].sim.finished).toBe(false);
+    expect(done.leaderboard.straight?.endedBy).toBe('time_up');
+  });
+
+  it('Game 1 Prep is an unscored lane practice: no countdown, no admission lock, laps instead of a finish, no result', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const seat = joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({
+      commandId: 'l',
+      type: 'load_phase',
+      phase: 'straight',
+      scoringEnabled: false,
+    });
+    const staged = session.getPublicSnapshot();
+    expect(staged.round.scoringEnabled).toBe(false);
+    expect(staged.sectionClock.section).toBe('game1_prep');
+    expect(staged.sectionClock.budgetSec).toBe(SECTION_BUDGET_DEFAULTS_SEC.game1_prep);
+
+    expect(session.executeHostCommand({ commandId: 's', type: 'start_phase' }).ok).toBe(true);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.getPublicSnapshot().admissionLocked).toBe(false);
+
+    let lapped = false;
+    let lastProgress = 0;
+    for (let k = 0; k < 235; k++) {
+      stroke(session, 'a', seat, `lap_${k}`);
+      for (let t = 0; t < 5; t++) {
+        clock.nowMs += 100;
+        session.stepSimulation(100);
+      }
+      const sim = session.getPublicSnapshot().teams[0].sim;
+      if (sim.laneProgress < lastProgress) lapped = true;
+      lastProgress = sim.laneProgress;
+      expect(sim.finished).toBe(false);
+    }
+    expect(lapped).toBe(true);
+
+    // Well past the planned time the practice is still going; it stops when the facilitator says so
+    clock.nowMs += 120000;
+    session.stepSimulation(120000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBeLessThan(0);
+    expect(session.executeHostCommand({ commandId: 'e', type: 'end_round' }).ok).toBe(true);
+    const done = session.getPublicSnapshot();
+    expect(done.runStatus).toBe('finished');
+    expect(done.teams[0].sim.rank).toBeNull();
+    expect(done.leaderboard.straight).toBeNull();
+    expect(done.leaderboard.standings).toHaveLength(0);
+  });
+
+  it('discussion is its own display-only phase with a topic; nothing can be started, ended, or paddled', () => {
+    const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    const seat = joinAndCalibrate(session, 'a', 1);
+
+    const noTopic = session.executeHostCommand({ commandId: 'd0', type: 'load_phase', phase: 'discussion' });
+    expect(noTopic.code).toBe('INVALID_DISCUSSION_TOPIC');
+    const bogusPhase = {
+      commandId: 'd_bogus',
+      type: 'load_phase',
+      phase: 'results_please',
+    } as unknown as HostCommandPayload;
+    expect(session.executeHostCommand(bogusPhase).code).toBe('INVALID_PHASE');
+
+    for (const topic of ['before_game1', 'after_game1'] as const) {
+      expect(
+        session.executeHostCommand({
+          commandId: `d_${topic}`,
+          type: 'load_phase',
+          phase: 'discussion',
+          discussionTopic: topic,
+        }).ok,
+      ).toBe(true);
+      const snap = session.getPublicSnapshot();
+      expect(snap.phase).toBe('discussion');
+      expect(snap.round.discussionTopic).toBe(topic);
+      expect(snap.round.scoringEnabled).toBe(false);
+
+      expect(session.executeHostCommand({ commandId: `s_${topic}`, type: 'start_phase' }).code).toBe(
+        'NOTHING_TO_START',
+      );
+      expect(session.executeHostCommand({ commandId: `e_${topic}`, type: 'end_round' }).code).toBe(
+        'NO_ROUND_TO_END',
+      );
+      expect(session.executeHostCommand({ commandId: `p_${topic}`, type: 'pause_phase' }).code).toBe(
+        'NOT_RUNNING',
+      );
+      expect(stroke(session, 'a', seat, `talk_${topic}`).code).toBe('ROUND_NOT_RUNNING');
+    }
+
+    // Leaving the discussion clears its topic
+    session.executeHostCommand({ commandId: 'tr', type: 'load_phase', phase: 'training' });
+    expect(session.getPublicSnapshot().round.discussionTopic).toBeNull();
+  });
+
+  it('leaderboard keeps each completed game, scores placements transparently, shares tied ranks, and clears with the session', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const a = joinAndCalibrate(session, 'a', 1);
+    joinAndCalibrate(session, 'b', 2);
+    const advance = (ms: number) => {
+      clock.nowMs += ms;
+      session.stepSimulation(ms);
+    };
+
+    // Game 1: Team 1 swims home, Team 2 never moves; the facilitator ends the round
+    session.executeHostCommand({ commandId: 'g1l', type: 'load_phase', phase: 'straight' });
+    session.executeHostCommand({ commandId: 'g1s', type: 'start_phase', overrideWarnings: true });
+    advance(3000);
+    for (let k = 0; k < 400 && !session.getPublicSnapshot().teams[0].sim.finished; k++) {
+      stroke(session, 'a', a, `g1_${k}`);
+      for (let t = 0; t < 5; t++) advance(100);
+    }
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    session.executeHostCommand({ commandId: 'g1e', type: 'end_round' });
+
+    const afterGame1 = session.getPublicSnapshot().leaderboard;
+    expect(afterGame1.straight?.endedBy).toBe('facilitator');
+    expect(afterGame1.straight?.teams.map((t) => [t.teamNumber, t.rank, t.finished])).toEqual([
+      [1, 1, true],
+      [2, 2, false],
+    ]);
+    const team1Race = afterGame1.straight!.teams[0];
+    expect(team1Race.strokes).toBeGreaterThan(0);
+    expect(team1Race.syncAvg).toBeCloseTo(1, 6); // a one-limb creature is always fully in sync
+    expect(afterGame1.standings).toEqual([
+      { teamNumber: 1, rank: 1, points: 2 },
+      { teamNumber: 2, rank: 2, points: 1 },
+    ]);
+
+    // The dedicated discussion between the games does not disturb the stored result
+    session.executeHostCommand({
+      commandId: 'talk',
+      type: 'load_phase',
+      phase: 'discussion',
+      discussionTopic: 'after_game1',
+    });
+    expect(session.getPublicSnapshot().leaderboard.straight?.teams).toHaveLength(2);
+
+    // Game 2: Team 2 collects one item, Team 1 none
+    session.executeHostCommand({
+      commandId: 'g2l',
+      type: 'load_phase',
+      phase: 'freewater',
+      scoringEnabled: true,
+      seed: 7,
+    });
+    session.executeHostCommand({ commandId: 'g2s', type: 'start_phase', overrideWarnings: true });
+    advance(3000);
+    const internalTeams = (session as unknown as { teams: Map<number, { sim: { x: number; y: number } }> }).teams;
+    const item = session.getPublicSnapshot().round.items[0];
+    internalTeams.get(2)!.sim.x = item.x;
+    internalTeams.get(2)!.sim.y = item.y;
+    advance(16);
+    session.executeHostCommand({ commandId: 'g2e', type: 'end_round' });
+
+    session.executeHostCommand({ commandId: 'lb', type: 'load_phase', phase: 'leaderboard' });
+    const board = session.getPublicSnapshot();
+    expect(board.phase).toBe('leaderboard');
+    expect(
+      board.leaderboard.freewater?.teams.map((t) => [t.teamNumber, t.rank, t.score, t.items]),
+    ).toEqual([
+      [1, 2, 0, 0],
+      [2, 1, item.points, 1],
+    ]);
+    // 2 + 1 points each: equal totals share rank 1, with no hidden tie-break
+    expect(board.leaderboard.standings).toEqual([
+      { teamNumber: 1, rank: 1, points: 3 },
+      { teamNumber: 2, rank: 1, points: 3 },
+    ]);
+    expect(session.executeHostCommand({ commandId: 'lbs', type: 'start_phase' }).code).toBe(
+      'NOTHING_TO_START',
+    );
+
+    session.executeHostCommand({ commandId: 'clr', type: 'clear_session', confirmClearSession: true });
+    const cleared = session.getPublicSnapshot();
+    expect(cleared.leaderboard).toEqual({ straight: null, freewater: null, standings: [] });
+    expect(cleared.guideVisible).toBe(true);
+  });
+});
+
+describe('Revision 0.4 — dynamic limbs, item kinds, Game 2 Prep items, and the music switch', () => {
+  function makeSession() {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const advance = (ms: number) => {
+      // Fixed 60 Hz steps, like the server loop
+      let left = ms;
+      while (left > 0) {
+        const dt = Math.min(1000 / 60, left);
+        clock.nowMs += dt;
+        session.stepSimulation(dt);
+        left -= dt;
+      }
+    };
+    return { session, clock, advance };
+  }
+  const GRACE = GAME_DEFAULTS.disconnectedLimbGraceMs;
+  const names = (session: ClassroomGameSession, teamNumber = 1) =>
+    session
+      .getPublicSnapshot()
+      .teams.find((t) => t.teamNumber === teamNumber)
+      ?.limbs.map((l) => l.playerName) ?? [];
+  const join = (session: ClassroomGameSession, socketId: string, name: string, teamNumber = 1) => {
+    const res = session.joinPlayer(socketId, teamNumber, name);
+    if (!res.ok || !res.data) throw new Error(`Join failed: ${res.code}`);
+    return res.data;
+  };
+
+  it('keeps a disconnected limb through the grace period, then removes it and renumbers the rest', () => {
+    const { session, advance } = makeSession();
+    const seats = ['Ana', 'Ben', 'Cy', 'Di'].map((n, i) => join(session, `s${i}`, n));
+
+    session.handleSocketDisconnect('s1'); // Ben
+    advance(GRACE - 200);
+    let team = session.getPublicSnapshot().teams[0];
+    expect(team.limbCount).toBe(4);
+    expect(team.limbs[1].playerName).toBe('Ben');
+    expect(team.limbs[1].connected).toBe(false);
+
+    advance(400);
+    team = session.getPublicSnapshot().teams[0];
+    expect(team.limbCount).toBe(3);
+    expect(team.joinedCount).toBe(3);
+    expect(team.limbs.map((l) => [l.limbIndex, l.playerName])).toEqual([
+      [0, 'Ana'],
+      [1, 'Cy'],
+      [2, 'Di'],
+    ]);
+    // Nobody's gesture changed when the limbs were renumbered
+    expect(team.limbs.map((l) => l.gestureId)).toEqual([
+      seats[0].assignment.gestureId,
+      seats[2].assignment.gestureId,
+      seats[3].assignment.gestureId,
+    ]);
+    // Mission Control still lists Ben, marked as away
+    const ben = session.getHostSnapshot().players.find((p) => p.playerName === 'Ben')!;
+    expect(ben.seated).toBe(false);
+    expect(ben.connected).toBe(false);
+  });
+
+  it('grows the limb back in its old place, with the same identity and gesture, when that phone returns', () => {
+    const { session, advance } = makeSession();
+    const seats = ['Ana', 'Ben', 'Cy', 'Di'].map((n, i) => join(session, `s${i}`, n));
+    session.handleSocketDisconnect('s1');
+    advance(GRACE + 100);
+    expect(names(session)).toEqual(['Ana', 'Cy', 'Di']);
+
+    const back = session.resumePlayer('s1_new', seats[1].resumeToken);
+    expect(back.ok).toBe(true);
+    expect(back.data?.playerId).toBe(seats[1].playerId);
+    expect(back.data?.assignment.gestureId).toBe(seats[1].assignment.gestureId);
+    expect(back.data?.limbIndex).toBe(1);
+    expect(names(session)).toEqual(['Ana', 'Ben', 'Cy', 'Di']);
+  });
+
+  it('a quick refresh inside the grace period never changes the creature', () => {
+    const { session, advance } = makeSession();
+    const seats = ['Ana', 'Ben', 'Cy'].map((n, i) => join(session, `s${i}`, n));
+    session.handleSocketDisconnect('s2');
+    advance(1500);
+    expect(session.resumePlayer('s2_new', seats[2].resumeToken).ok).toBe(true);
+    advance(GRACE * 2);
+    expect(names(session)).toEqual(['Ana', 'Ben', 'Cy']);
+  });
+
+  it('lets a person who lost their seat rejoin a full team as a new limb, without a ghost limb left behind', () => {
+    const { session, advance } = makeSession();
+    const seats = ['A', 'B', 'C', 'D', 'E', 'F'].map((n, i) => join(session, `s${i}`, n));
+    expect(session.joinPlayer('extra', 1, 'G').code).toBe('TEAM_FULL');
+
+    session.handleSocketDisconnect('s3'); // D closes the tab and loses the page
+    advance(GRACE + 100);
+    const rejoined = join(session, 's3_again', 'D again');
+    const team = session.getPublicSnapshot().teams[0];
+    expect(team.limbCount).toBe(6);
+    expect(team.connectedCount).toBe(6);
+    expect(team.limbs.map((l) => l.playerName)).toEqual(['A', 'B', 'C', 'E', 'F', 'D again']);
+    // The newcomer takes the one sweep nobody seated is using, so all six still differ
+    expect(new Set(team.limbs.map((l) => l.gestureId)).size).toBe(6);
+    expect(rejoined.assignment.gestureId).toBe(seats[3].assignment.gestureId);
+
+    // The old phone turning up now finds the team full and is sent back to the join screen
+    const late = session.resumePlayer('s3_old', seats[3].resumeToken);
+    expect(late.ok).toBe(false);
+    expect(late.code).toBe('SEAT_NOT_FOUND');
+    expect(session.getPublicSnapshot().teams[0].limbCount).toBe(6);
+  });
+
+  it('prices strokes for the limbs actually on the creature once a departed limb is released', () => {
+    const { session, advance } = makeSession();
+    const seats = [0, 1, 2, 3].map((i) => joinAndCalibrate(session, `p${i}`, 1));
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'straight', scoringEnabled: false });
+    session.executeHostCommand({ commandId: 's', type: 'start_phase', overrideWarnings: true });
+    advance(50);
+
+    const speedAfterOneStroke = (id: string) => {
+      const internal = (session as unknown as { teams: Map<number, { sim: { vx: number } }> }).teams.get(1)!;
+      internal.sim.vx = 0;
+      expect(stroke(session, 'p0', seats[0], id).ok).toBe(true);
+      return internal.sim.vx;
+    };
+    const lone = GAME_DEFAULTS.syncMinMultiplier;
+    const base = GAME_DEFAULTS.baseCycleForwardImpulse;
+
+    session.handleSocketDisconnect('p3');
+    // Inside the grace period the missing player is still one of four limbs: no extra power
+    expect(speedAfterOneStroke('grace')).toBeCloseTo((base / 4) * lone, 6);
+
+    advance(GRACE + 100);
+    expect(session.getPublicSnapshot().teams[0].limbCount).toBe(3);
+    // Afterwards the creature is a three-limb creature, exactly like a team that joined as three
+    expect(speedAfterOneStroke('released')).toBeCloseTo((base / 3) * lone, 6);
+  });
+
+  it('counts only limbs on creatures toward the 30-player cap', () => {
+    const { session, advance } = makeSession();
+    for (let i = 0; i < 30; i++) join(session, `c${i}`, `P${i}`, Math.floor(i / 6) + 1);
+    expect(session.joinPlayer('c30', 6, 'Late').code).toBe('SESSION_FULL');
+    session.handleSocketDisconnect('c0');
+    advance(GRACE + 100);
+    expect(session.joinPlayer('c30', 6, 'Late').ok).toBe(true);
+  });
+
+  it('gives Game 2 Prep items worth points on the display but records no result', () => {
+    const { session, advance } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    joinAndCalibrate(session, 'b', 2);
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'freewater', scoringEnabled: false, seed: 5 });
+    expect(session.getPublicSnapshot().round.items.length).toBe(GAME_DEFAULTS.targetActiveItems);
+    session.executeHostCommand({ commandId: 's', type: 'start_phase' });
+    advance(100);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+
+    const internalTeams = (session as unknown as { teams: Map<number, { sim: { x: number; y: number } }> }).teams;
+    const item = session.getPublicSnapshot().round.items[0];
+    internalTeams.get(1)!.sim.x = item.x;
+    internalTeams.get(1)!.sim.y = item.y;
+    advance(16);
+    expect(session.getPublicSnapshot().teams[0].sim.score).toBe(item.points);
+
+    session.executeHostCommand({ commandId: 'e', type: 'end_round' });
+    const after = session.getPublicSnapshot();
+    expect(after.leaderboard.freewater).toBeNull();
+    expect(after.leaderboard.standings).toEqual([]);
+  });
+
+  it('spawns three kinds of item with their own point values and at most one star at a time', () => {
+    const { session, advance } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 60; seed++) {
+      session.executeHostCommand({ commandId: `l${seed}`, type: 'load_phase', phase: 'freewater', scoringEnabled: true, seed });
+      const items = session.getPublicSnapshot().round.items;
+      for (const it of items) {
+        seen.add(it.variant);
+        expect(it.points).toBe(POND_ITEMS[it.variant].points);
+      }
+      expect(items.filter((it) => it.variant === 'pond_star').length).toBeLessThanOrEqual(1);
+      expect(items.filter((it) => it.variant === 'golden_bug').length).toBeLessThanOrEqual(
+        POND_ITEMS.golden_bug.maxActive,
+      );
+    }
+    expect([...seen].sort()).toEqual(['glow_seed', 'golden_bug', 'pond_star']);
+    expect(POND_ITEMS.glow_seed.points).toBeLessThan(POND_ITEMS.golden_bug.points);
+    expect(POND_ITEMS.golden_bug.points).toBeLessThan(POND_ITEMS.pond_star.points);
+    advance(1);
+  });
+
+  it('switches background music from Mission Control only, off by default, and keeps it across a session clear', () => {
+    const { session } = makeSession();
+    expect(session.getPublicSnapshot().musicEnabled).toBe(false);
+    expect(session.executeHostCommand({ commandId: 'm1', type: 'set_music_enabled', enabled: true }).ok).toBe(true);
+    expect(session.getPublicSnapshot().musicEnabled).toBe(true);
+    expect(
+      session.executeHostCommand({
+        commandId: 'm2',
+        type: 'set_music_enabled',
+        enabled: 'yes' as unknown as boolean,
+      }).ok,
+    ).toBe(false);
+    session.executeHostCommand({ commandId: 'clr', type: 'clear_session', confirmClearSession: true });
+    expect(session.getPublicSnapshot().musicEnabled).toBe(true);
+    expect(session.executeHostCommand({ commandId: 'm3', type: 'set_music_enabled', enabled: false }).ok).toBe(true);
+    expect(session.getPublicSnapshot().musicEnabled).toBe(false);
+  });
+});
+
+describe('Revision 0.5 — session plan and the section clock', () => {
+  function makeSession() {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({
+      nowFn: () => clock.nowMs,
+      initialMinTeamSize: 1,
+      initialMaxTeamSize: 6,
+    });
+    const wait = (ms: number) => {
+      clock.nowMs += ms;
+      session.stepSimulation(ms);
+    };
+    return { session, clock, wait };
+  }
+
+  it("defaults to the owner's 25-minute plan", () => {
+    expect(SECTION_BUDGET_DEFAULTS_SEC).toEqual({
+      joining: 240,
+      training: 120,
+      game1_prep: 180,
+      discussion_before_game1: 120,
+      game1: 240,
+      discussion_after_game1: 120,
+      game2_prep: 180,
+      game2: 300,
+    });
+    expect(SECTION_ORDER.reduce((sum, id) => sum + SECTION_BUDGET_DEFAULTS_SEC[id], 0)).toBe(25 * 60);
+    expect(new ClassroomGameSession().getPublicSnapshot().sectionBudgetsSec).toEqual(SECTION_BUDGET_DEFAULTS_SEC);
+  });
+
+  it('maps every phase to its section, and gives the leaderboard none', () => {
+    expect(sectionForPhase('lobby', false, null)).toBe('joining');
+    expect(sectionForPhase('training', false, null)).toBe('training');
+    expect(sectionForPhase('straight', false, null)).toBe('game1_prep');
+    expect(sectionForPhase('straight', true, null)).toBe('game1');
+    expect(sectionForPhase('discussion', false, 'before_game1')).toBe('discussion_before_game1');
+    expect(sectionForPhase('discussion', false, 'after_game1')).toBe('discussion_after_game1');
+    expect(sectionForPhase('freewater', false, null)).toBe('game2_prep');
+    expect(sectionForPhase('freewater', true, null)).toBe('game2');
+    expect(sectionForPhase('leaderboard', false, null)).toBeNull();
+  });
+
+  it('shows time left, then zero, then a growing negative', () => {
+    expect(formatSectionClock(240000)).toBe('4:00');
+    expect(formatSectionClock(239001)).toBe('4:00');
+    expect(formatSectionClock(239000)).toBe('3:59');
+    expect(formatSectionClock(1)).toBe('0:01');
+    expect(formatSectionClock(0)).toBe('0:00');
+    expect(formatSectionClock(-999)).toBe('0:00');
+    expect(formatSectionClock(-1000)).toBe('-0:01');
+    expect(formatSectionClock(-75000)).toBe('-1:15');
+  });
+
+  it('holds the joining clock until the first player joins or the facilitator starts it', () => {
+    const { session, wait } = makeSession();
+    wait(60000);
+    const waiting = session.getPublicSnapshot().sectionClock;
+    expect(waiting).toMatchObject({ section: 'joining', running: false, elapsedMs: 0, remainingMs: 240000 });
+
+    joinAndCalibrate(session, 'a', 1);
+    wait(30000);
+    expect(session.getPublicSnapshot().sectionClock).toMatchObject({ running: true, remainingMs: 210000 });
+
+    // A second player does not restart it
+    joinAndCalibrate(session, 'b', 1);
+    wait(10000);
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(200000);
+
+    const other = makeSession();
+    other.wait(5000);
+    expect(other.session.executeHostCommand({ commandId: 'go', type: 'restart_section_clock' }).ok).toBe(true);
+    other.wait(15000);
+    expect(other.session.getPublicSnapshot().sectionClock).toMatchObject({ running: true, remainingMs: 225000 });
+  });
+
+  it('restarts from the full planned time whenever a phase is loaded', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    wait(500000);
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBeLessThan(0);
+
+    const steps = [
+      [{ phase: 'training' }, 'training'],
+      [{ phase: 'straight', scoringEnabled: false }, 'game1_prep'],
+      [{ phase: 'discussion', discussionTopic: 'before_game1' }, 'discussion_before_game1'],
+      [{ phase: 'straight', scoringEnabled: true }, 'game1'],
+      [{ phase: 'discussion', discussionTopic: 'after_game1' }, 'discussion_after_game1'],
+      [{ phase: 'freewater', scoringEnabled: false }, 'game2_prep'],
+      [{ phase: 'freewater', scoringEnabled: true }, 'game2'],
+    ] as const;
+    steps.forEach(([load, section], i) => {
+      expect(session.executeHostCommand({ commandId: `plan_${i}`, type: 'load_phase', ...load }).ok).toBe(true);
+      const fresh = session.getPublicSnapshot().sectionClock;
+      expect(fresh).toMatchObject({
+        section,
+        running: true,
+        elapsedMs: 0,
+        budgetSec: SECTION_BUDGET_DEFAULTS_SEC[section],
+        remainingMs: SECTION_BUDGET_DEFAULTS_SEC[section] * 1000,
+      });
+      wait(7000);
+      expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(SECTION_BUDGET_DEFAULTS_SEC[section] * 1000 - 7000);
+    });
+
+    session.executeHostCommand({ commandId: 'plan_lb', type: 'load_phase', phase: 'leaderboard' });
+    expect(session.getPublicSnapshot().sectionClock.section).toBeNull();
+  });
+
+  it('runs into the minus without ending anything outside the two scored games', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+
+    session.executeHostCommand({ commandId: 't', type: 'load_phase', phase: 'training' });
+    session.executeHostCommand({ commandId: 'ts', type: 'start_phase' });
+    wait(SECTION_BUDGET_DEFAULTS_SEC.training * 1000 + 45000);
+    let snap = session.getPublicSnapshot();
+    expect(snap.phase).toBe('training');
+    expect(snap.runStatus).toBe('running');
+    expect(snap.sectionClock.remainingMs).toBe(-45000);
+
+    session.executeHostCommand({ commandId: 'd', type: 'load_phase', phase: 'discussion', discussionTopic: 'after_game1' });
+    wait(SECTION_BUDGET_DEFAULTS_SEC.discussion_after_game1 * 1000 + 600000);
+    snap = session.getPublicSnapshot();
+    expect(snap.phase).toBe('discussion');
+    expect(snap.sectionClock.remainingMs).toBe(-600000);
+
+    // Both prep rounds keep running long after their planned time
+    for (const [id, phase, section] of [
+      ['p1', 'straight', 'game1_prep'],
+      ['p2', 'freewater', 'game2_prep'],
+    ] as const) {
+      session.executeHostCommand({ commandId: id, type: 'load_phase', phase, scoringEnabled: false });
+      session.executeHostCommand({ commandId: `${id}s`, type: 'start_phase' });
+      for (let i = 0; i < SECTION_BUDGET_DEFAULTS_SEC[section] + 240; i++) wait(1000);
+      snap = session.getPublicSnapshot();
+      expect(snap.runStatus).toBe('running');
+      expect(snap.sectionClock.remainingMs).toBe(-240000);
+      expect(snap.leaderboard.standings).toHaveLength(0);
+    }
+  });
+
+  it('ends Game 2 at zero, counted from when the phase was loaded', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'freewater', scoringEnabled: true });
+    // 40 s of staging before the facilitator presses Start: it comes out of the five minutes
+    wait(40000);
+    session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    for (let i = 0; i < 256; i++) wait(1000);
+    let snap = session.getPublicSnapshot();
+    expect(snap.runStatus).toBe('running');
+    expect(snap.sectionClock.remainingMs).toBe(1000);
+
+    wait(1000);
+    snap = session.getPublicSnapshot();
+    expect(snap.runStatus).toBe('finished');
+    expect(snap.leaderboard.freewater?.endedBy).toBe('time_up');
+    // 300 s planned - 40 s staging - 3 s countdown = 257 s of play, less the tick in which time ran out
+    // (1 s in this test, 1/60 s on the real server)
+    expect(snap.leaderboard.freewater?.activeElapsedMs).toBe(256000);
+
+    // The clock keeps showing how far over the section is while results are on screen
+    wait(20000);
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(-20000);
+    expect(session.getPublicSnapshot().runStatus).toBe('finished');
+  });
+
+  it('moves the end of a live scored game when the planned time changes or the clock restarts', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'freewater', scoringEnabled: true });
+    session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    for (let i = 0; i < 290; i++) wait(1000);
+    // 7 s left: one more minute
+    session.executeHostCommand({ commandId: 'b', type: 'set_section_budget', section: 'game2', budgetSec: 360 });
+    for (let i = 0; i < 60; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(7000);
+    // 7 s left again: start the six minutes over
+    session.executeHostCommand({ commandId: 'r', type: 'restart_section_clock' });
+    for (let i = 0; i < 359; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('finished');
+    expect(session.getPublicSnapshot().leaderboard.freewater?.endedBy).toBe('time_up');
+
+    // Shortening the time below what has already passed ends a live game at the next tick
+    session.executeHostCommand({ commandId: 'g1', type: 'load_phase', phase: 'straight', scoringEnabled: true });
+    session.executeHostCommand({ commandId: 'g1s', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    for (let i = 0; i < 57; i++) wait(1000);
+    session.executeHostCommand({ commandId: 'b1', type: 'set_section_budget', section: 'game1', budgetSec: 30 });
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    wait(100);
+    expect(session.getPublicSnapshot().runStatus).toBe('finished');
+    expect(session.getPublicSnapshot().leaderboard.straight?.endedBy).toBe('time_up');
+  });
+
+  it('does not end a scored game the instant it starts when the section time was already used up', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'freewater', scoringEnabled: true });
+    // The whole five minutes pass while the round is still staged
+    for (let i = 0; i < 320; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('ready');
+    const started = session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    expect(started.ok).toBe(true);
+    expect(started.message).toMatch(/will not end by itself/);
+    wait(3000);
+    for (let i = 0; i < 120; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+
+    // Giving the clock time again brings the automatic end back
+    session.executeHostCommand({ commandId: 'r', type: 'restart_section_clock' });
+    for (let i = 0; i < 299; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('finished');
+    expect(session.getPublicSnapshot().leaderboard.freewater?.endedBy).toBe('time_up');
+
+    // A round reset after time ran out starts unarmed too
+    expect(session.executeHostCommand({ commandId: 'rr', type: 'reset_scored_round' }).ok).toBe(true);
+    session.executeHostCommand({ commandId: 'gs2', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    for (let i = 0; i < 30; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+  });
+
+  it('holds a paused scored game when time runs out and ends it on resume', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'straight', scoringEnabled: true });
+    session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    for (let i = 0; i < 200; i++) wait(1000);
+    session.executeHostCommand({ commandId: 'p', type: 'pause_phase' });
+    for (let i = 0; i < 100; i++) wait(1000);
+    expect(session.getPublicSnapshot().runStatus).toBe('paused');
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBeLessThan(0);
+    session.executeHostCommand({ commandId: 'rs', type: 'resume_phase' });
+    wait(100);
+    const done = session.getPublicSnapshot();
+    expect(done.runStatus).toBe('finished');
+    expect(done.leaderboard.straight?.endedBy).toBe('time_up');
+  });
+
+  it('keeps counting through a pause and through a round reset', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'straight', scoringEnabled: true });
+    session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    wait(10000);
+    session.executeHostCommand({ commandId: 'p', type: 'pause_phase' });
+    const activeAtPause = session.getPublicSnapshot().round.activeElapsedMs;
+    wait(20000);
+    let snap = session.getPublicSnapshot();
+    // Class time went on, round time did not
+    expect(snap.sectionClock.elapsedMs).toBe(33000);
+    expect(snap.round.activeElapsedMs).toBe(activeAtPause);
+
+    expect(session.executeHostCommand({ commandId: 'r', type: 'reset_scored_round' }).ok).toBe(true);
+    wait(2000);
+    snap = session.getPublicSnapshot();
+    expect(snap.runStatus).toBe('ready');
+    expect(snap.sectionClock.elapsedMs).toBe(35000);
+  });
+
+  it('lets the facilitator change a planned time or restart the clock, and nothing else moves', () => {
+    const { session, wait } = makeSession();
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'g', type: 'load_phase', phase: 'freewater', scoringEnabled: true });
+    session.executeHostCommand({ commandId: 'gs', type: 'start_phase', overrideWarnings: true });
+    wait(3000);
+    wait(27000);
+    const before = session.getPublicSnapshot();
+
+    expect(
+      session.executeHostCommand({ commandId: 'b1', type: 'set_section_budget', section: 'game2', budgetSec: 360 }).ok,
+    ).toBe(true);
+    let snap = session.getPublicSnapshot();
+    expect(snap.sectionClock).toMatchObject({ budgetSec: 360, elapsedMs: 30000, remainingMs: 330000 });
+    expect(snap.runStatus).toBe('running');
+    expect(snap.round.roundId).toBe(before.round.roundId);
+    expect(snap.inputEpoch).toBe(before.inputEpoch);
+
+    // Another section's time can be set ahead of reaching it
+    session.executeHostCommand({ commandId: 'b2', type: 'set_section_budget', section: 'training', budgetSec: 90 });
+    expect(session.getPublicSnapshot().sectionBudgetsSec.training).toBe(90);
+    expect(session.getPublicSnapshot().sectionClock.budgetSec).toBe(360);
+
+    for (const [id, payload] of [
+      ['bad1', { section: 'game2', budgetSec: 5 }],
+      ['bad2', { section: 'game2', budgetSec: 99999 }],
+      ['bad3', { section: 'game2', budgetSec: Number.NaN }],
+      ['bad4', { section: 'nonsense', budgetSec: 60 }],
+    ] as const) {
+      const res = session.executeHostCommand({ commandId: id, type: 'set_section_budget', ...payload } as never);
+      expect(res.ok).toBe(false);
+    }
+    expect(session.getPublicSnapshot().sectionBudgetsSec.game2).toBe(360);
+
+    expect(session.executeHostCommand({ commandId: 'rs', type: 'restart_section_clock' }).ok).toBe(true);
+    snap = session.getPublicSnapshot();
+    expect(snap.sectionClock).toMatchObject({ elapsedMs: 0, remainingMs: 360000 });
+    expect(snap.runStatus).toBe('running');
+    expect(snap.round.roundId).toBe(before.round.roundId);
+
+    session.executeHostCommand({ commandId: 'ge', type: 'end_round' });
+    session.executeHostCommand({ commandId: 'lb', type: 'load_phase', phase: 'leaderboard' });
+    expect(session.executeHostCommand({ commandId: 'rs2', type: 'restart_section_clock' }).code).toBe('NO_SECTION_CLOCK');
+
+    // A cleared session returns to a waiting joining clock but keeps the facilitator's planned times
+    session.executeHostCommand({ commandId: 'clr', type: 'clear_session', confirmClearSession: true });
+    snap = session.getPublicSnapshot();
+    expect(snap.sectionClock).toMatchObject({ section: 'joining', running: false, remainingMs: 240000 });
+    expect(snap.sectionBudgetsSec.game2).toBe(360);
+    expect(snap.sectionBudgetsSec.training).toBe(90);
   });
 });

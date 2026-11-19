@@ -405,11 +405,282 @@ button:disabled {
   gap: 0.65rem;
 }
 
+/* Live controller: four rows that always fit one screen, so nobody scrolls mid-game.
+   1 identity + preferences (auto) · 2 creature beside the assigned sweep (scales with viewport height)
+   3 status (fixed two lines) · 4 hold pad (all remaining height, anchored to the bottom edge). */
 .play-controller-locked {
+  height: 100vh;
   height: 100dvh;
   overflow: hidden;
+  gap: 0.5rem;
   user-select: none;
   -webkit-user-select: none;
+}
+/* No pull-to-refresh or rubber-banding while paddling */
+html:has(.play-controller-locked),
+html:has(.play-controller-locked) body {
+  overscroll-behavior: none;
+}
+
+.controller-topbar {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 0.3rem;
+}
+.controller-identity {
+  flex: 1 1 9rem;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.controller-identity-text {
+  min-width: 0;
+}
+.controller-identity-text > * {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.controller-identity-sub {
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+}
+/* Wraps under the identity as one right-aligned line when the bar is too narrow for both */
+.controller-tools {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.controller-visual-row {
+  flex-shrink: 0;
+  height: 142px;
+  height: clamp(116px, 26dvh, 240px);
+  display: flex;
+  gap: 0.5rem;
+  margin-right: 4px;
+}
+
+/* The assigned sweep as a square tile; tapping it pauses or replays the looping demo */
+.gesture-tile {
+  flex: 0 0 auto;
+  width: 108px;
+  width: clamp(92px, 20dvh, 170px);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.3rem 0.3rem 0.2rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper-white);
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.gesture-tile .gesture-demo-svg {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+}
+.gesture-tile-caption {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* Status line that always reserves two lines, so a longer message never pushes the pad around */
+.status-banner-fixed {
+  flex-shrink: 0;
+  min-height: calc(2 * 1.25 * 0.94rem + 1rem + 2 * var(--stroke));
+}
+.status-banner-fixed > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.status-banner-fixed > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.play-controller-locked .paddle-hold-pad {
+  min-height: 120px;
+  max-height: none;
+}
+
+/* Onboarding practice step: the same one-screen rule as the controller. The panel fills the screen and
+   the pad takes whatever height is left between the sweep demo and the action row. */
+.onboard-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.play-practice-fit {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  gap: 0.5rem;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html:has(.play-practice-fit),
+html:has(.play-practice-fit) body {
+  overscroll-behavior: none;
+}
+.play-practice-fit .play-topbar {
+  flex-shrink: 0;
+}
+.play-practice-fit .play-topbar-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* .onboard-panel is declared further down, hence the doubled class to override its spacing */
+.onboard-panel.practice-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0.6rem 0.8rem 0.7rem;
+  gap: 0.42rem;
+}
+.practice-panel > * {
+  flex-shrink: 0;
+}
+.practice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.practice-head .step-track {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.practice-head .practice-title {
+  flex: 0 0 auto;
+}
+.onboard-panel .practice-title {
+  font-size: 1.6rem;
+  font-size: clamp(1.25rem, 6.4vw, 1.6rem);
+  line-height: 1;
+  white-space: nowrap;
+}
+.practice-count {
+  display: inline-block;
+  margin-left: 0.15rem;
+  padding: 0.05rem 0.45rem 0;
+  background: var(--comic-yellow);
+  border: var(--stroke-thin) solid var(--ink);
+  border-radius: var(--radius-sm);
+  text-shadow: none;
+  font-variant-numeric: tabular-nums;
+}
+.onboard-panel .practice-tip {
+  font-size: 0.9rem;
+  line-height: 1.3;
+  min-height: 2.6em;
+}
+.onboard-panel .practice-tip-alert {
+  color: var(--ink);
+  font-weight: 700;
+}
+/* Sweep demo as one slim strip: arrow, instruction, and the pause/replay button side by side */
+.practice-panel .gesture-demo-box {
+  gap: 0.6rem;
+  padding: 0.35rem 0.5rem;
+}
+.practice-panel .gesture-demo-box .gesture-demo-svg {
+  width: 54px;
+  height: 54px;
+}
+.practice-panel .gesture-demo-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.practice-panel .gesture-demo-meta .btn-xs {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.practice-panel .gesture-demo-sub {
+  display: none;
+}
+.practice-panel .status-banner-fixed {
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+  min-height: calc(2 * 1.25 * 0.94rem + 0.6rem + 2 * var(--stroke));
+}
+.practice-panel .paddle-hold-pad {
+  flex: 1 1 0;
+  min-height: 110px;
+  max-height: none;
+}
+.practice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.5rem;
+}
+.practice-actions .btn-primary,
+.practice-actions .btn-secondary {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Too short to fit everything (very small or sideways phones): scroll rather than clip */
+@media (max-height: 539px) {
+  .play-practice-fit {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+}
+@media (max-height: 449px) and (orientation: portrait) {
+  .play-controller-locked {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+}
+
+/* Phone turned sideways: the pad takes the right half at full height, everything else stacks on the left */
+@media (orientation: landscape) and (max-height: 500px) {
+  .play-controller-locked {
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    column-gap: 0.75rem;
+    padding-left: max(0.85rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.85rem, env(safe-area-inset-right, 0px));
+  }
+  .play-controller-locked > * {
+    grid-column: 1;
+  }
+  .play-controller-locked .controller-visual-row {
+    height: auto;
+    min-height: 0;
+  }
+  .play-controller-locked .paddle-hold-pad {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    min-height: 0;
+  }
 }
 
 .play-topbar {
@@ -469,6 +740,17 @@ button:disabled {
   color: var(--ink);
 }
 
+/* Calibrate step: reminder to lock screen rotation before sweeping */
+.onboard-panel .rotation-tip {
+  background: var(--comic-yellow);
+  border: var(--stroke-thin) solid var(--ink);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
 /* Step tracker: three ink dots, the current one filled */
 .step-track {
   display: flex;
@@ -478,6 +760,8 @@ button:disabled {
   color: var(--ink-soft);
 }
 .step-dot {
+  /* Fixed size: a flex row short on width must not squash the circles into ovals */
+  flex: 0 0 1.55rem;
   width: 1.55rem;
   height: 1.55rem;
   border-radius: 50%;
@@ -498,7 +782,12 @@ button:disabled {
   box-shadow: var(--shadow-sm);
 }
 .step-track-line {
-  flex: 0 0 0.9rem;
+  /* Sized with width, not flex-basis: an empty span's flex-basis does not count toward the
+     track's own shrink-to-fit width, which is what squeezed the dots beside the Practice title.
+     The connectors give way first when the row is tight. */
+  flex: 0 1 auto;
+  width: 0.9rem;
+  min-width: 0.25rem;
   height: 0;
   border-top: var(--stroke-thin) dashed var(--ink);
 }
@@ -667,6 +956,177 @@ button:disabled {
   transition: width 60ms linear;
 }
 
+/* Press / Move / Release: the three beats of every stroke.
+   Live variant sits on the pad and lights the beat the player is on; the explain variant is a
+   static list with a line of detail per beat (phone onboarding and the classroom display). */
+.sweep-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  pointer-events: none;
+}
+.sweep-step {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+}
+.sweep-step-num {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: var(--stroke-thin) solid var(--ink);
+  background: var(--paper-white);
+  line-height: 1;
+}
+.sweep-steps-live {
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  max-width: 100%;
+}
+.sweep-steps-live .sweep-step {
+  gap: 0.25rem;
+  padding: 0.14rem 0.5rem 0.14rem 0.2rem;
+  font-size: clamp(0.82rem, 3.9vw, 1.05rem);
+  background: rgba(255, 255, 255, 0.55);
+  border: var(--stroke-thin) solid var(--ink);
+  border-radius: 999px;
+  opacity: 0.6;
+  transition:
+    transform 110ms var(--ease-out),
+    opacity 110ms ease-out,
+    background-color 110ms ease-out;
+}
+.sweep-steps-live .sweep-step-num {
+  width: 1.25em;
+  height: 1.25em;
+  font-size: 0.92em;
+}
+.sweep-steps-live .sweep-step.is-now {
+  opacity: 1;
+  background: var(--paper-white);
+  transform: scale(1.12);
+  box-shadow: var(--shadow-sm);
+  z-index: 1;
+}
+.sweep-steps-live .sweep-step.is-now .sweep-step-num {
+  background: var(--comic-yellow);
+}
+.sweep-steps-live .sweep-step.is-done {
+  opacity: 0.85;
+}
+.sweep-steps-live .sweep-step.is-done .sweep-step-num {
+  background: var(--comic-green);
+}
+.sweep-steps-explain {
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.sweep-steps-explain .sweep-step {
+  gap: 0.6rem;
+  padding: 0.4rem 0.65rem;
+  background: var(--paper-white);
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+}
+.sweep-steps-explain .sweep-step-num {
+  width: 2rem;
+  height: 2rem;
+  font-size: 1.25rem;
+  background: var(--comic-yellow);
+}
+.sweep-steps-explain .sweep-step-word {
+  font-size: 1.45rem;
+  line-height: 1;
+}
+.sweep-steps-explain .sweep-step-detail {
+  font-family: var(--font-body);
+  font-weight: 700;
+  letter-spacing: 0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+  color: var(--ink-soft);
+}
+/* Side by side, for the how-to-play guide on the display */
+.sweep-steps-row {
+  flex-direction: row;
+  gap: 0.7rem;
+}
+.sweep-steps-row .sweep-step,
+.sweep-steps-display .sweep-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.7rem;
+  align-items: center;
+}
+.sweep-steps-row .sweep-step {
+  flex: 1 1 0;
+  padding: 0.5rem 0.7rem;
+}
+.sweep-steps-row .sweep-step-num,
+.sweep-steps-display .sweep-step-num {
+  grid-row: 1 / span 2;
+}
+.sweep-steps-row .sweep-step-num {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1.6rem;
+}
+.sweep-steps-row .sweep-step-word {
+  font-size: 1.9rem;
+}
+.sweep-steps-row .sweep-step-detail {
+  font-size: 1.02rem;
+}
+/* Large type for the Training display; the highlight walks 1 -> 2 -> 3 like a stroke does */
+.sweep-steps-display {
+  width: 100%;
+  gap: 0.7rem;
+}
+.sweep-steps-display .sweep-step {
+  padding: 0.65rem 0.8rem;
+  animation: sweep-step-cycle 4.2s infinite;
+  animation-delay: calc(var(--i) * 1.4s);
+}
+.sweep-steps-display .sweep-step-num {
+  width: 3.3rem;
+  height: 3.3rem;
+  font-size: 2.15rem;
+}
+.sweep-steps-display .sweep-step-word {
+  font-size: 2.6rem;
+}
+.sweep-steps-display .sweep-step-detail {
+  font-size: 1.1rem;
+}
+@keyframes sweep-step-cycle {
+  0%,
+  29% {
+    background: var(--comic-yellow);
+    transform: scale(1.045);
+  }
+  34%,
+  100% {
+    background: var(--paper-white);
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sweep-steps-live .sweep-step {
+    transition: none;
+  }
+  .sweep-steps-display .sweep-step {
+    animation: none;
+  }
+}
+
 /* Onomatopoeia burst that pops over the pad when a stroke is accepted */
 .pad-pop {
   position: absolute;
@@ -768,6 +1228,54 @@ button:disabled {
   transform: rotate(-1.5deg);
 }
 
+.section-clock-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-top: 2px dashed var(--ink);
+  padding-top: 0.6rem;
+}
+
+/* Section clock: yellow while there is time left, red and negative once the section has overrun.
+   The "Over" tag and the minus sign carry the state without relying on colour. */
+.section-clock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 4.6ch;
+  justify-content: center;
+}
+.section-clock.is-waiting {
+  background: var(--paper-white);
+  color: var(--ink-secondary);
+}
+.section-clock.is-over {
+  background: #e02424;
+  color: #ffffff;
+  animation: section-clock-over 1.1s ease-in-out infinite;
+}
+.section-clock-flag {
+  font-family: var(--font-body, inherit);
+  font-size: 0.42em;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+@keyframes section-clock-over {
+  0%,
+  100% {
+    transform: rotate(-1.5deg) scale(1);
+  }
+  50% {
+    transform: rotate(-1.5deg) scale(1.06);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .section-clock.is-over {
+    animation: none;
+  }
+}
+
 .lobby-empty-stage {
   flex: 1;
   min-height: 0;
@@ -806,6 +1314,45 @@ button:disabled {
   margin: 0;
   font-size: 2.1rem;
   --word-fill: var(--comic-yellow);
+}
+/* Training: Press / Move / Release how-to plus the rotation-lock reminder, in the join panel's place */
+.training-help-panel {
+  gap: 1rem;
+}
+.rotation-reminder {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: left;
+  background: var(--comic-yellow-pale);
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.6rem;
+}
+.rotation-icon {
+  flex: 0 0 68px;
+  width: 68px;
+  height: auto;
+}
+.rotation-reminder-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.98rem;
+  line-height: 1.25;
+  color: var(--ink-soft);
+}
+.rotation-reminder-text strong {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.45rem;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  color: var(--ink);
+}
+.rotation-reminder-text b {
+  color: var(--ink);
 }
 .qr-panel-hero {
   max-width: 620px;
@@ -944,14 +1491,16 @@ button:disabled {
   display: block;
 }
 .play-creature-wrap {
-  height: 142px;
-  flex-shrink: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  margin-right: 4px;
 }
+/* The phone's creature view is sized by its row, never by the display card minimums */
 .play-creature-wrap .pond-card-canvas-wrap {
   height: 100%;
+  min-height: 0;
   border-radius: var(--radius-md);
 }
 
@@ -970,7 +1519,7 @@ button:disabled {
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     grid-template-rows: auto;
   }
-  .pond-card-canvas-wrap {
+  .screen-shell .pond-card-canvas-wrap {
     min-height: 190px;
   }
   .qr-sticker {
@@ -1058,6 +1607,184 @@ button:disabled {
   aspect-ratio: 1600 / 960;
   object-fit: contain;
   border-radius: var(--radius-sm);
+}
+
+/* Game 2 scoreboard: a column of big score tiles beside the water. On a 16:9 display it sits in
+   the space the arena's letterboxing would otherwise leave black. */
+.arena-stage-wrap .scoreboard + .arena-canvas {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+.scoreboard {
+  flex: 0 0 clamp(180px, 14.5vw, 280px);
+  align-self: stretch;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.45rem 0.5rem 0.45rem 0.3rem;
+}
+.scoreboard-title {
+  text-align: center;
+  font-size: 2.1rem;
+  line-height: 1;
+  --word-fill: var(--comic-yellow);
+}
+.scoreboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.score-tile {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: 168px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.1rem;
+  padding: 0.25rem 0.6rem 0.25rem 0.55rem;
+  background: var(--paper);
+  border: var(--stroke-bold) solid var(--ink);
+  border-left: 14px solid var(--team, var(--ink));
+  border-radius: var(--radius-md);
+  box-shadow: 4px 4px 0 rgba(255, 255, 255, 0.28);
+  transition: background-color 200ms ease-out;
+}
+.score-tile.is-leading {
+  background: var(--comic-yellow);
+}
+.score-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--ink);
+}
+.score-tile-place {
+  flex: 0 0 auto;
+  width: 1.45em;
+  height: 1.45em;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--paper-white);
+  font-size: 0.95em;
+}
+.score-tile.is-leading .score-tile-place {
+  background: var(--comic-red);
+}
+.score-tile-points {
+  position: relative;
+  line-height: 1;
+}
+.score-tile-number {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: clamp(1.7rem, calc(44vh / var(--n, 6)), 4.3rem);
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  transform-origin: left center;
+  animation: score-bump 460ms var(--ease-out);
+}
+.score-tile.is-leading .score-tile-number {
+  color: var(--comic-red);
+  -webkit-text-stroke: 1.5px var(--ink);
+  paint-order: stroke fill;
+}
+.score-gain {
+  position: absolute;
+  right: -0.2rem;
+  top: -0.35rem;
+  padding: 0.05rem 0.4rem;
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  line-height: 1.1;
+  color: var(--paper-white);
+  background: var(--comic-red);
+  border: var(--stroke-thin) solid var(--ink);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+  animation: score-gain-rise 1300ms ease-out forwards;
+}
+.scoreboard-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--paper-white);
+  border: var(--stroke-thin) dashed rgba(255, 255, 255, 0.55);
+  border-radius: var(--radius-sm);
+}
+.legend-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.legend-item strong {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  color: var(--comic-yellow);
+}
+@keyframes score-bump {
+  0% {
+    transform: scale(1.38) rotate(-3deg);
+  }
+  55% {
+    transform: scale(0.96);
+  }
+  100% {
+    transform: none;
+  }
+}
+@keyframes score-gain-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.6);
+  }
+  14% {
+    opacity: 1;
+    transform: translateY(-6px) scale(1.2);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-14px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-26px) scale(0.95);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .score-tile-number,
+  .score-gain {
+    animation: none;
+  }
+  .score-gain {
+    display: none;
+  }
+}
+.music-unlock {
+  animation: pad-breathe 1.2s ease-in-out infinite alternate;
 }
 
 .stage-overlay {
@@ -1216,6 +1943,213 @@ button:disabled {
   font-size: 0.8rem;
   margin-top: 0.5rem;
   word-break: break-all;
+}
+
+/* Training without the join panel: the card grid takes the full stage */
+.training-grid-only {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ----------------------------------------------------------------------------
+   Discussion phase: one big panel of prompts, readable from the back row
+   ---------------------------------------------------------------------------- */
+.talk-stage,
+.leaderboard-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem 7px 7px 0;
+}
+.talk-panel {
+  position: relative;
+  width: min(1180px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: clamp(0.6rem, 1.6vh, 1.3rem);
+  background: var(--paper);
+  color: var(--ink);
+  border: 5px solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: 9px 9px 0 var(--ink);
+  padding: clamp(1.2rem, 3vh, 2.6rem) clamp(1.4rem, 3vw, 3.2rem);
+  animation: overlay-pop 420ms var(--ease-out) both;
+}
+.talk-panel h2 {
+  margin: 0;
+  font-size: clamp(2.6rem, 6.2vw, 6rem);
+  --word-fill: var(--comic-yellow);
+  --word-stroke: 3px;
+  --word-shadow: 6px 6px 0;
+}
+.talk-kicker {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.1rem, 1.8vw, 1.9rem);
+  letter-spacing: 0.05em;
+  transform: rotate(-2deg);
+}
+.talk-sticker {
+  position: absolute;
+  top: -3.2rem;
+  right: -1.6rem;
+  font-size: clamp(1.4rem, 2.2vw, 2.4rem);
+  transform: rotate(10deg);
+}
+.talk-sticker .comic-burst {
+  padding: 1.2em 1.7em;
+}
+.talk-questions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: talk;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.5rem, 1.5vh, 1.1rem);
+  font-size: clamp(1.3rem, 2.5vw, 2.7rem);
+  font-weight: 700;
+  line-height: 1.22;
+}
+.talk-questions li {
+  counter-increment: talk;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6em;
+}
+.talk-questions li::before {
+  content: counter(talk);
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 1.5em;
+  height: 1.5em;
+  font-family: var(--font-display);
+  font-weight: 400;
+  background: var(--comic-yellow);
+  border: var(--stroke) solid var(--ink);
+  border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+}
+.talk-recap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  padding-top: 0.7rem;
+  border-top: var(--stroke) dashed var(--ink);
+  width: 100%;
+}
+.talk-recap .pill {
+  font-size: clamp(0.85rem, 1.1vw, 1.15rem);
+}
+.talk-recap-label {
+  font-family: var(--font-display);
+  font-size: clamp(1.1rem, 1.5vw, 1.6rem);
+  letter-spacing: 0.05em;
+  margin-right: 0.3rem;
+}
+
+/* ----------------------------------------------------------------------------
+   Leaderboard phase: session highlights above the combined standings
+   ---------------------------------------------------------------------------- */
+.leaderboard-panel {
+  width: min(1500px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.5rem, 1.4vh, 1rem);
+  background: var(--paper);
+  color: var(--ink);
+  border: 5px solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: 9px 9px 0 var(--ink);
+  padding: clamp(0.9rem, 2.2vh, 1.8rem) clamp(1.1rem, 2.2vw, 2.4rem);
+  animation: overlay-pop 420ms var(--ease-out) both;
+}
+.leaderboard-panel h2 {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(2.2rem, 4.4vw, 4.2rem);
+  --word-fill: var(--comic-yellow);
+  --word-stroke: 3px;
+  --word-shadow: 5px 5px 0;
+}
+.leaderboard-empty {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(1.1rem, 1.8vw, 1.8rem);
+  color: var(--ink-soft);
+}
+.stat-tile-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: clamp(0.5rem, 1vw, 1rem);
+}
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  background: var(--comic-blue-pale);
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 0.45rem 0.6rem 0.55rem;
+  text-align: center;
+}
+.stat-tile-label {
+  font-size: clamp(0.8rem, 1vw, 1.05rem);
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.stat-tile-value {
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 3.2vw, 3.2rem);
+  letter-spacing: 0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.stat-tile-team {
+  font-size: clamp(0.8rem, 1vw, 1.05rem);
+  font-weight: 700;
+}
+.leaderboard-table {
+  margin-top: 0;
+  font-size: clamp(0.95rem, 1.35vw, 1.4rem);
+}
+.leaderboard-table th {
+  font-size: clamp(0.9rem, 1.15vw, 1.2rem);
+  white-space: nowrap;
+}
+.leaderboard-table td {
+  font-variant-numeric: tabular-nums;
+}
+.leaderboard-table td:last-child {
+  font-family: var(--font-display);
+  font-size: 1.5em;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+.leaderboard-table td:last-child strong {
+  font-weight: 400;
+}
+.leaderboard-sub {
+  font-size: 0.8em;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.leaderboard-note {
+  margin: 0;
+  font-size: clamp(0.8rem, 1vw, 1.05rem);
+  color: var(--ink-soft);
+  text-align: center;
 }
 
 /* ============================================================================

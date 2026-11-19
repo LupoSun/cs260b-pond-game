@@ -3,17 +3,28 @@ import {
   GAME_DEFAULTS,
   GESTURE_ASSIGNMENT_ORDER,
   GESTURE_SPECS,
+  POND_ITEMS,
+  POND_ITEM_ORDER,
   MAX_TEAM_NUMBER,
   MAX_TEAM_SIZE_LIMIT,
   MAX_TOTAL_PLAYERS,
   MIN_TEAM_SIZE_LIMIT,
+  describePhase,
   getLimbLayout,
+  getSyncMultiplier,
   getTeamIdentityPreset,
+  SECTION_BUDGET_DEFAULTS_SEC,
+  SECTION_LABELS,
+  SECTION_ORDER,
+  sectionForPhase,
 } from '../shared/constants.js';
 import type {
   AckResponse,
   ActivityPhase,
   CalibrationSummary,
+  DiscussionTopic,
+  GameResultPublic,
+  GameTeamResult,
   GestureId,
   HostCommandPayload,
   HostPlayerDiagnostic,
@@ -23,11 +34,14 @@ import type {
   InputMethod,
   InputPreviewPayload,
   ItemCollectedBroadcast,
+  LeaderboardStanding,
   LimbSlotSpec,
+  LoadablePhase,
   MotionAssignment,
   NetworkPresentationMode,
   PlayerPrivateSeat,
   PondItemPublicState,
+  PondItemVariant,
   RoundPublicState,
   RunStatus,
   SensorStatus,
@@ -37,6 +51,8 @@ import type {
   StrokeCompletePayload,
   TeamPublicState,
   TeamSimState,
+  SectionClockState,
+  SectionId,
 } from '../shared/types.js';
 import { PLAYER_NAME_MAX_LENGTH, sanitizePlayerName } from '../shared/playerName.js';
 import { createSeededRng } from './prng.js';
@@ -60,6 +76,16 @@ interface PlayerRecord {
   assignment: MotionAssignment;
   socketId: string | null;
   connected: boolean;
+  /** When the current disconnection began; null while connected */
+  disconnectedAtMs: number | null;
+  /**
+   * False once this player's limb has been released from the creature after a disconnect. The
+   * record (identity, team, gesture, calibration) stays so the same phone can take a limb again.
+   * While unseated, limbIndex is -1.
+   */
+  seated: boolean;
+  /** Session-wide join sequence; limbs are ordered by it, so a returning player gets their old place back */
+  joinOrder: number;
   connectionGeneration: number;
   sensorStatus: SensorStatus;
   calibrated: boolean;
@@ -77,6 +103,44 @@ interface PlayerRecord {
   measuredClockOffsetMs: number | null;
 }
 
+/** Strokes from different limbs of one team that landed within GAME_DEFAULTS.syncWindowMs (straight swim). */
+interface SyncGroupRecord {
+  startedAtMs: number;
+  limbIndexes: Set<number>;
+  /** Forward speed already granted to this group; the group is re-priced as limbs join */
+  awardedDv: number;
+}
+
+/** Per-round counters behind the leaderboard statistics; cleared whenever a round is staged or started. */
+interface TeamRoundStats {
+  strokes: number;
+  /** Sum over counted strokes of (final sync-group size / joined limbs) */
+  syncWeight: number;
+  fullSyncCount: number;
+}
+
+function emptyRoundStats(): TeamRoundStats {
+  return { strokes: 0, syncWeight: 0, fullSyncCount: 0 };
+}
+
+const LOADABLE_PHASES: readonly LoadablePhase[] = [
+  'training',
+  'straight',
+  'freewater',
+  'discussion',
+  'leaderboard',
+];
+
+/** Fisher–Yates shuffle of the gesture vocabulary. Not seeded: assignments should differ per session. */
+function shuffledGestureOrder(): GestureId[] {
+  const order = [...GESTURE_ASSIGNMENT_ORDER];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
 interface TeamRecord {
   teamNumber: number;
   teamName: string;
@@ -87,8 +151,16 @@ interface TeamRecord {
   layout: LimbSlotSpec[];
   /** Joined player IDs in limb order (0..maxTeamSize-1); disconnects preserve membership & limb count */
   seatPlayerIds: string[];
+  /**
+   * This team's own random ordering of the gesture vocabulary, drawn once when the team is created.
+   * Limb i takes gestureOrder[i], so teammates get different sweeps and nobody can predict a
+   * gesture from the team number or the order people joined in.
+   */
+  gestureOrder: GestureId[];
   latestAcknowledgment: TeamPublicState['latestAcknowledgment'];
   sim: TeamSimState;
+  syncGroup: SyncGroupRecord | null;
+  stats: TeamRoundStats;
 }
 
 interface InternalItemRecord extends PondItemPublicState {
@@ -117,7 +189,11 @@ export class ClassroomGameSession {
   private networkMode: NetworkPresentationMode = 'continuous';
   private networkModeVersion = 1;
   private admissionLocked = false;
-  private guideVisible = false;
+  /** A fresh session opens on the how-to-play guide; loading or starting any phase hides it */
+  private guideVisible = true;
+  /** Background music on the classroom display; a facilitator preference that survives a session clear */
+  private musicEnabled = false;
+  private nextJoinOrder = 1;
   private minTeamSize: number = GAME_DEFAULTS.defaultMinTeamSize;
   private maxTeamSize: number = GAME_DEFAULTS.defaultMaxTeamSize;
 
@@ -134,15 +210,32 @@ export class ClassroomGameSession {
   // Round & simulation state
   private roundId = makeId('rnd');
   private scoringEnabled = false;
-  private pausedForDiscussion = false;
+  private discussionTopic: DiscussionTopic | null = null;
   private seed = 2602026;
   private rng: () => number = createSeededRng(2602026);
-  private durationSec: number = GAME_DEFAULTS.straightRaceDurationSec;
+  // Session plan: per-section time budgets and the clock for the section on screen, started at load.
+  // Budgets are facilitator settings and survive a session clear. The clock ends the two scored
+  // games at zero and only paces every other section.
+  private sectionBudgetsSec: Record<SectionId, number> = { ...SECTION_BUDGET_DEFAULTS_SEC };
+  private sectionClockStartedAtMs: number | null = null;
+  /**
+   * True while a scored game still has, or has had since it was staged, section time to play in.
+   * A round staged or started after the clock already ran out is not armed, so it is not ended the
+   * instant it starts; giving the clock time again (restart, longer budget) arms it.
+   */
+  private timeUpArmed = false;
   private activeElapsedMs = 0;
   private countdownRemainingMs = 0;
   private nextFinishRank = 1;
   private items: InternalItemRecord[] = [];
   private itemCounter = 0;
+
+  // Most recently completed scored run of each game, kept for the leaderboard phase
+  private gameResults: { straight: GameResultPublic | null; freewater: GameResultPublic | null } = {
+    straight: null,
+    freewater: null,
+  };
+  private leaderboardStandings: LeaderboardStanding[] = [];
 
   // Deduplication caches
   private acceptedStrokes = new Map<string, AckResponse<{ strokeId: string }>>();
@@ -195,6 +288,30 @@ export class ClassroomGameSession {
   private bumpInputEpoch(): void {
     this.inputEpoch += 1;
     this.clearAllActiveAttempts();
+    // A sync group never spans a pause, reset, or phase change
+    for (const team of this.teams.values()) {
+      team.syncGroup = null;
+    }
+  }
+
+  /** The section of the session plan that is on screen now (null: the leaderboard, which has no budget). */
+  private currentSection(): SectionId | null {
+    return sectionForPhase(this.phase, this.scoringEnabled, this.discussionTopic);
+  }
+
+  private getSectionClock(nowMs: number): SectionClockState {
+    const section = this.currentSection();
+    if (!section) {
+      return { section: null, budgetSec: 0, running: false, elapsedMs: 0, remainingMs: 0 };
+    }
+    const budgetSec = this.sectionBudgetsSec[section];
+    const running = this.sectionClockStartedAtMs !== null;
+    const elapsedMs = running ? Math.max(0, Math.round(nowMs - (this.sectionClockStartedAtMs as number))) : 0;
+    return { section, budgetSec, running, elapsedMs, remainingMs: budgetSec * 1000 - elapsedMs };
+  }
+
+  private isScoredGamePhase(): boolean {
+    return (this.phase === 'straight' || this.phase === 'freewater') && this.scoringEnabled;
   }
 
   private clearAllActiveAttempts(): void {
@@ -230,8 +347,11 @@ export class ClassroomGameSession {
       accessory: preset.accessory,
       layout: [],
       seatPlayerIds: [],
+      gestureOrder: shuffledGestureOrder(),
       latestAcknowledgment: null,
       sim: this.createInitialTeamSim(this.teams.size, Math.max(1, this.teams.size + 1), this.phase),
+      syncGroup: null,
+      stats: emptyRoundStats(),
     };
     this.teams.set(teamNumber, created);
     return created;
@@ -267,7 +387,10 @@ export class ClassroomGameSession {
         finishTimeMs: null,
         rank: null,
         score: 0,
+        itemsCollected: 0,
         trainingPulse: 0,
+        syncCount: 0,
+        syncAtMs: null,
       };
     }
 
@@ -285,7 +408,10 @@ export class ClassroomGameSession {
       finishTimeMs: null,
       rank: null,
       score: 0,
+      itemsCollected: 0,
       trainingPulse: 0,
+      syncCount: 0,
+      syncAtMs: null,
     };
   }
 
@@ -342,7 +468,7 @@ export class ClassroomGameSession {
       }
     }
 
-    if (this.players.size >= MAX_TOTAL_PLAYERS) {
+    if (this.seatedPlayerCount() >= MAX_TOTAL_PLAYERS) {
       return this.failAck(
         'SESSION_FULL',
         `All ${MAX_TOTAL_PLAYERS} classroom seats are already filled.`,
@@ -361,8 +487,7 @@ export class ClassroomGameSession {
 
     const freeLimbIndex = team.seatPlayerIds.length;
     const limbLabel = `Limb ${freeLimbIndex + 1}`;
-    const gestureId: GestureId =
-      GESTURE_ASSIGNMENT_ORDER[(requestedTeamNumber - 1 + freeLimbIndex) % GESTURE_ASSIGNMENT_ORDER.length];
+    const gestureId: GestureId = this.pickGestureForNewLimb(team);
     const gestureSpec = GESTURE_SPECS[gestureId];
 
     const playerId = makeId('plr');
@@ -385,6 +510,9 @@ export class ClassroomGameSession {
       assignment,
       socketId,
       connected: true,
+      disconnectedAtMs: null,
+      seated: true,
+      joinOrder: this.nextJoinOrder++,
       connectionGeneration: 1,
       sensorStatus: 'unknown',
       calibrated: false,
@@ -403,14 +531,15 @@ export class ClassroomGameSession {
     };
 
     // Atomic seat assignment + dynamic creature limb growth
-    team.seatPlayerIds.push(playerId);
-    team.layout = getLimbLayout(team.seatPlayerIds.length);
     this.players.set(playerId, record);
+    team.seatPlayerIds.push(playerId);
+    this.reflowTeamLimbs(team);
     this.playersByResumeToken.set(resumeToken, playerId);
     this.playersBySocketId.set(socketId, playerId);
 
-    if (this.runStatus === 'ready' && (this.phase === 'straight' || this.phase === 'freewater')) {
-      this.alignParticipatingStartPositions(this.phase);
+    // The joining section's clock starts with the first player, unless the facilitator started it earlier
+    if (this.phase === 'lobby' && this.sectionClockStartedAtMs === null) {
+      this.sectionClockStartedAtMs = this.nowFn();
     }
 
     this.bumpRevision();
@@ -460,8 +589,27 @@ export class ClassroomGameSession {
       this.callbacks.onPlayerSuperseded?.(previousSocketId);
     }
 
+    // A limb released after a long disconnect is grown back, provided the team and session have room
+    if (!player.seated) {
+      const team = this.getOrCreateDynamicTeam(player.teamNumber);
+      if (team.seatPlayerIds.length >= this.maxTeamSize || this.seatedPlayerCount() >= MAX_TOTAL_PLAYERS) {
+        this.playersByResumeToken.delete(resumeToken);
+        this.players.delete(playerId);
+        this.logEvent(
+          'warn',
+          `${player.playerName} returned to Team ${player.teamNumber}, but it filled up while they were away; their old seat was dropped.`,
+        );
+        return this.failAck(
+          'SEAT_NOT_FOUND',
+          `Team ${player.teamNumber} filled up while you were away. Ask your facilitator which team to join.`,
+        );
+      }
+      this.seatPlayer(team, player);
+    }
+
     player.socketId = socketId;
     player.connected = true;
+    player.disconnectedAtMs = null;
     player.connectionGeneration += 1;
     player.activeAttempt = null;
     this.playersBySocketId.set(socketId, playerId);
@@ -490,9 +638,100 @@ export class ClassroomGameSession {
 
     player.socketId = null;
     player.connected = false;
+    player.disconnectedAtMs = this.nowFn();
     player.activeAttempt = null;
     this.bumpRevision();
-    this.logEvent('info', `${player.playerName} (Team ${player.teamNumber} · ${player.limbLabel}) disconnected (seat preserved).`);
+    this.logEvent(
+      'info',
+      `${player.playerName} (Team ${player.teamNumber} · ${player.limbLabel}) disconnected; the limb is released after ${Math.round(GAME_DEFAULTS.disconnectedLimbGraceMs / 1000)}s unless they return.`,
+    );
+  }
+
+  // =========================================================================
+  // Dynamic limbs: a creature has exactly one limb per seated player
+  // =========================================================================
+
+  private seatedPlayerCount(): number {
+    let total = 0;
+    for (const team of this.teams.values()) total += team.seatPlayerIds.length;
+    return total;
+  }
+
+  /**
+   * The first gesture in the team's random order that no seated teammate is using. Gestures held by
+   * teammates whose limb was released are avoided while any other is free, so a returning player
+   * usually still has a sweep nobody else on the creature shares.
+   */
+  private pickGestureForNewLimb(team: TeamRecord): GestureId {
+    const seated = new Set<GestureId>();
+    const away = new Set<GestureId>();
+    for (const p of this.players.values()) {
+      if (p.teamNumber !== team.teamNumber) continue;
+      (p.seated ? seated : away).add(p.assignment.gestureId);
+    }
+    return (
+      team.gestureOrder.find((g) => !seated.has(g) && !away.has(g)) ??
+      team.gestureOrder.find((g) => !seated.has(g)) ??
+      team.gestureOrder[team.seatPlayerIds.length % team.gestureOrder.length]
+    );
+  }
+
+  /** Recomputes the creature's limbs from its seated players, in join order. Gestures never change. */
+  private reflowTeamLimbs(team: TeamRecord): void {
+    team.seatPlayerIds.sort(
+      (a, b) => (this.players.get(a)?.joinOrder ?? 0) - (this.players.get(b)?.joinOrder ?? 0),
+    );
+    team.layout = getLimbLayout(team.seatPlayerIds.length);
+    team.seatPlayerIds.forEach((pid, index) => {
+      const p = this.players.get(pid);
+      if (!p) return;
+      p.limbIndex = index;
+      p.limbLabel = `Limb ${index + 1}`;
+    });
+    // Limb numbers just changed, so a half-built sync group no longer describes this creature
+    team.syncGroup = null;
+    if (this.runStatus === 'ready' && (this.phase === 'straight' || this.phase === 'freewater')) {
+      this.alignParticipatingStartPositions(this.phase);
+    }
+  }
+
+  private seatPlayer(team: TeamRecord, player: PlayerRecord): void {
+    if (!team.seatPlayerIds.includes(player.playerId)) team.seatPlayerIds.push(player.playerId);
+    player.seated = true;
+    this.reflowTeamLimbs(team);
+    this.logEvent(
+      'info',
+      `${player.playerName} is back on Team ${team.teamNumber} as ${player.limbLabel}; creature now has ${team.layout.length} limb(s).`,
+    );
+  }
+
+  private unseatPlayer(player: PlayerRecord): void {
+    const team = this.teams.get(player.teamNumber);
+    if (!team || !player.seated) return;
+    team.seatPlayerIds = team.seatPlayerIds.filter((pid) => pid !== player.playerId);
+    player.seated = false;
+    player.limbIndex = -1;
+    player.activeAttempt = null;
+    this.reflowTeamLimbs(team);
+    this.bumpRevision();
+    this.logEvent(
+      'info',
+      `Released ${player.playerName}'s limb on Team ${team.teamNumber} after a disconnect; creature now has ${team.layout.length} limb(s).`,
+    );
+  }
+
+  /** Releases the limb of every player who has been disconnected for longer than the grace period. */
+  private releaseLimbsOfDepartedPlayers(nowMs: number): void {
+    for (const player of this.players.values()) {
+      if (
+        player.seated &&
+        !player.connected &&
+        player.disconnectedAtMs !== null &&
+        nowMs - player.disconnectedAtMs >= GAME_DEFAULTS.disconnectedLimbGraceMs
+      ) {
+        this.unseatPlayer(player);
+      }
+    }
   }
 
   updateSensorStatus(
@@ -778,7 +1017,7 @@ export class ClassroomGameSession {
       team.sim.trainingPulse = Math.min(1, team.sim.trainingPulse + 0.65);
     } else {
       player.hasSucceededStroke = true;
-      this.applyAcceptedStrokeImpulse(team, player);
+      this.applyAcceptedStrokeImpulse(team, player, nowMs);
     }
 
     team.latestAcknowledgment = {
@@ -822,17 +1061,46 @@ export class ClassroomGameSession {
   }
 
   /**
-   * Fixed-impulse propulsion normalized by the creature's joined limb count N (Section 10.1 & 10.2).
+   * Propulsion normalized by the creature's joined limb count N (Sections 10.1 to 10.3).
+   * Free water: one fixed impulse per accepted stroke.
+   * Straight swim: the impulse is scaled by how many of the N limbs stroked together.
    * Identical in `continuous` and `stroke_events` modes; disconnected seats NEVER shrink N or inflate power.
    */
-  private applyAcceptedStrokeImpulse(team: TeamRecord, player: PlayerRecord): void {
+  private applyAcceptedStrokeImpulse(team: TeamRecord, player: PlayerRecord, nowMs: number): void {
     if (team.sim.finished || team.seatPlayerIds.length === 0) return;
 
-    const nJoinedLimbs = team.seatPlayerIds.length; // 1..6 joined limbs — never connectedCount!
+    // One limb per seated player. A disconnected player stays seated (and counted) through the grace
+    // period, so a network blip never changes anyone's power; after it their limb is released.
+    const nJoinedLimbs = team.seatPlayerIds.length;
     const forwardDv = GAME_DEFAULTS.baseCycleForwardImpulse / nJoinedLimbs;
+    team.stats.strokes += 1;
 
     if (this.phase === 'straight') {
-      team.sim.vx = Math.min(GAME_DEFAULTS.maxLinearSpeed, team.sim.vx + forwardDv);
+      let group = team.syncGroup;
+      if (
+        !group ||
+        nowMs - group.startedAtMs > GAME_DEFAULTS.syncWindowMs ||
+        group.limbIndexes.has(player.limbIndex)
+      ) {
+        group = { startedAtMs: nowMs, limbIndexes: new Set(), awardedDv: 0 };
+        team.syncGroup = group;
+      }
+      group.limbIndexes.add(player.limbIndex);
+      const inSync = group.limbIndexes.size;
+
+      // Re-price the whole group at its new size and grant only the difference, so the strokes that
+      // landed first are topped up and the total never depends on arrival order inside the window.
+      const groupDv = inSync * forwardDv * getSyncMultiplier(inSync, nJoinedLimbs);
+      const topUpDv = groupDv - group.awardedDv;
+      group.awardedDv = groupDv;
+      team.sim.vx = Math.min(GAME_DEFAULTS.straightMaxLinearSpeed, team.sim.vx + topUpDv);
+
+      team.sim.syncCount = inSync;
+      team.sim.syncAtMs = nowMs;
+      team.stats.syncWeight += (2 * inSync - 1) / nJoinedLimbs;
+      if (inSync === nJoinedLimbs && nJoinedLimbs >= 2) {
+        team.stats.fullSyncCount += 1;
+      }
       return;
     }
 
@@ -878,6 +1146,31 @@ export class ClassroomGameSession {
       ) {
         player.activeAttempt = null;
       }
+    }
+
+    // 1b. Dynamic limbs: a player who stayed disconnected past the grace period gives up their limb
+    this.releaseLimbsOfDepartedPlayers(nowMs);
+
+    // 1c. Time up: the section clock ends the two scored games and nothing else (owner's decision)
+    if (this.isScoredGamePhase()) {
+      const remainingMs = this.getSectionClock(nowMs).remainingMs;
+      if (remainingMs > 0) {
+        this.timeUpArmed = true;
+      } else if (this.runStatus === 'ready') {
+        this.timeUpArmed = false;
+      } else if (this.timeUpArmed && this.runStatus === 'running') {
+        this.finishRoundInternal(
+          this.phase === 'straight' ? 'Game 1 time is up.' : 'Game 2 time is up.',
+          'time_up',
+        );
+        return;
+      }
+    }
+
+    // A discussion has no simulation; its clock only shows the facilitator how long the room has talked
+    if (this.phase === 'discussion') {
+      this.activeElapsedMs += dtMs;
+      return;
     }
 
     // Decay training card visual spring pulse smoothly
@@ -926,6 +1219,8 @@ export class ClassroomGameSession {
     const startX = 120;
     const finishX = GAME_DEFAULTS.arenaWidth - 140;
     const visualSpan = finishX - startX;
+    const courseLength = GAME_DEFAULTS.straightCourseLength;
+    const scored = this.scoringEnabled;
 
     let anyParticipating = false;
     let allParticipatingFinished = true;
@@ -941,8 +1236,12 @@ export class ClassroomGameSession {
       team.sim.vx *= Math.exp(-GAME_DEFAULTS.linearDragPerSec * dtSec);
       if (team.sim.vx < 0.01) team.sim.vx = 0;
 
-      if (team.sim.laneProgress >= GAME_DEFAULTS.straightCourseLength) {
-        team.sim.laneProgress = GAME_DEFAULTS.straightCourseLength;
+      if (team.sim.laneProgress >= courseLength && !scored) {
+        // Game 1 Prep has no finish and no ranking: start another lap so practice keeps going
+        team.sim.laneProgress %= courseLength;
+        allParticipatingFinished = false;
+      } else if (team.sim.laneProgress >= courseLength) {
+        team.sim.laneProgress = courseLength;
         team.sim.vx = 0;
         team.sim.finished = true;
         team.sim.finishTimeMs = Math.round(this.activeElapsedMs);
@@ -955,17 +1254,14 @@ export class ClassroomGameSession {
         allParticipatingFinished = false;
       }
 
-      team.sim.x =
-        startX +
-        (team.sim.laneProgress / GAME_DEFAULTS.straightCourseLength) * visualSpan;
+      team.sim.x = startX + (team.sim.laneProgress / courseLength) * visualSpan;
     }
 
-    if ((anyParticipating && allParticipatingFinished) || this.activeElapsedMs >= this.durationSec * 1000) {
-      this.finishRoundInternal(
-        anyParticipating && allParticipatingFinished
-          ? 'All participating teams crossed the finish line.'
-          : 'Race time limit reached.',
-      );
+    // The first finisher never ends the race: it runs until the last creature is home, the section
+    // clock reaches zero (stepSimulation), or the facilitator ends the round. Game 1 Prep has no finish.
+    const everyoneHome = scored && anyParticipating && allParticipatingFinished;
+    if (everyoneHome) {
+      this.finishRoundInternal('All participating teams crossed the finish line.', 'all_finished');
     }
   }
 
@@ -1008,8 +1304,9 @@ export class ClassroomGameSession {
       }
     }
 
-    // Authoritative item contact & respawn (only during scored collection round)
-    if (this.scoringEnabled) {
+    // Authoritative item contact & respawn. Game 2 Prep has items too: its points show on the display
+    // as practice and are never recorded as a result.
+    {
       const contactDist = GAME_DEFAULTS.creatureBodyRadius + GAME_DEFAULTS.itemCollisionRadius;
 
       for (const item of this.items) {
@@ -1020,6 +1317,8 @@ export class ClassroomGameSession {
               const pos = this.findFairItemPosition();
               item.x = pos.x;
               item.y = pos.y;
+              item.variant = this.pickItemVariant(this.items.filter((it) => it !== item));
+              item.points = POND_ITEMS[item.variant].points;
               item.available = true;
               item.collectedByTeam = null;
               item.collectedAtMs = null;
@@ -1050,13 +1349,16 @@ export class ClassroomGameSession {
           item.collectedByTeam = winner.teamNumber;
           item.collectedAtMs = nowMs;
           item.respawnRemainingMs = GAME_DEFAULTS.itemRespawnDelayMs;
-          winner.sim.score += 1;
+          winner.sim.score += item.points;
+          winner.sim.itemsCollected += 1;
           this.bumpRevision();
 
           this.callbacks.onItemCollected?.({
             itemId: item.itemId,
             roundId: this.roundId,
             teamNumber: winner.teamNumber,
+            variant: item.variant,
+            points: item.points,
             newScore: winner.sim.score,
             x: item.x,
             y: item.y,
@@ -1066,24 +1368,17 @@ export class ClassroomGameSession {
       }
     }
 
-    if (this.activeElapsedMs >= this.durationSec * 1000) {
-      this.finishRoundInternal(
-        this.scoringEnabled
-          ? 'Free-water collection round complete.'
-          : 'Free-water steering practice complete.',
-      );
-    }
+    // Scored free water ends when the section clock reaches zero (stepSimulation); practice has no end
   }
 
-  private finishRoundInternal(reason: string): void {
+  private finishRoundInternal(reason: string, endedBy: GameResultPublic['endedBy']): void {
     if (this.runStatus === 'finished') return;
     this.runStatus = 'finished';
-    this.pausedForDiscussion = false;
     this.bumpInputEpoch();
 
     const competing = this.getParticipatingTeams();
 
-    if (this.phase === 'straight') {
+    if (this.phase === 'straight' && this.scoringEnabled) {
       // Finishers already received ranks 1..k by finishTimeMs.
       // Rank unfinished participating teams afterward by laneProgress descending (shared rank on exact tie).
       const unfinished = competing
@@ -1122,9 +1417,74 @@ export class ClassroomGameSession {
       }
     }
 
+    // A scored round that never left its countdown has no result worth keeping
+    if (this.isScoredGamePhase() && this.activeElapsedMs > 0) {
+      this.recordGameResult(competing, endedBy);
+    }
+
     this.bumpRevision();
     this.logEvent('info', reason);
     this.callbacks.onPhaseOrStatusChanged?.(this.getPublicSnapshot());
+  }
+
+  /** Freezes this scored round's outcome for the leaderboard, replacing any earlier run of the same game. */
+  private recordGameResult(competing: TeamRecord[], endedBy: GameResultPublic['endedBy']): void {
+    const game = this.phase === 'straight' ? 'straight' : 'freewater';
+    const teams: GameTeamResult[] = competing.map((team) => ({
+      teamNumber: team.teamNumber,
+      rank: team.sim.rank,
+      finished: team.sim.finished,
+      finishTimeMs: team.sim.finishTimeMs,
+      progressPct: Math.round((team.sim.laneProgress / GAME_DEFAULTS.straightCourseLength) * 100),
+      score: team.sim.score,
+      items: game === 'freewater' ? team.sim.itemsCollected : null,
+      strokes: team.stats.strokes,
+      syncAvg:
+        game === 'straight' && team.stats.strokes > 0
+          ? team.stats.syncWeight / team.stats.strokes
+          : null,
+      fullSyncCount: game === 'straight' ? team.stats.fullSyncCount : null,
+    }));
+
+    this.gameResults[game] = {
+      game,
+      roundId: this.roundId,
+      activeElapsedMs: Math.round(this.activeElapsedMs),
+      endedBy,
+      teams,
+    };
+    this.leaderboardStandings = this.computeStandings();
+  }
+
+  /**
+   * Combined standings: in each completed game a team placed r-th out of T teams earns T - r + 1 points.
+   * Shared ranks earn the same points, and equal totals share an overall rank (no hidden tie-break).
+   */
+  private computeStandings(): LeaderboardStanding[] {
+    const points = new Map<number, number>();
+    for (const result of [this.gameResults.straight, this.gameResults.freewater]) {
+      if (!result) continue;
+      const fieldSize = result.teams.length;
+      for (const team of result.teams) {
+        if (team.rank === null) continue;
+        points.set(
+          team.teamNumber,
+          (points.get(team.teamNumber) ?? 0) + Math.max(0, fieldSize - team.rank + 1),
+        );
+      }
+    }
+
+    const sorted = [...points.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    const standings: LeaderboardStanding[] = [];
+    sorted.forEach(([teamNumber, teamPoints], i) => {
+      const tiedWithPrevious = i > 0 && sorted[i - 1][1] === teamPoints;
+      standings.push({
+        teamNumber,
+        points: teamPoints,
+        rank: tiedWithPrevious ? standings[i - 1].rank : i + 1,
+      });
+    });
+    return standings;
   }
 
   // =========================================================================
@@ -1154,13 +1514,23 @@ export class ClassroomGameSession {
   }
 
   private isActiveScoredRoundRunning(): boolean {
-    const isScored =
-      this.phase === 'straight' || (this.phase === 'freewater' && this.scoringEnabled);
-    return isScored && (this.runStatus === 'running' || this.runStatus === 'countdown');
+    return (
+      this.isScoredGamePhase() && (this.runStatus === 'running' || this.runStatus === 'countdown')
+    );
   }
 
   private dispatchHostCommand(cmd: HostCommandPayload): AckResponse {
     switch (cmd.type) {
+      case 'set_music_enabled': {
+        if (typeof cmd.enabled !== 'boolean') {
+          return this.failAck('INVALID_MUSIC_FLAG', 'Music must be switched on or off.');
+        }
+        this.musicEnabled = cmd.enabled;
+        this.bumpRevision();
+        this.logEvent('info', `Background music ${cmd.enabled ? 'on' : 'off'} on the classroom display.`);
+        return this.okAck('MUSIC_UPDATED', `Background music ${cmd.enabled ? 'on' : 'off'}.`);
+      }
+
       case 'set_team_size_bounds': {
         if (this.isActiveScoredRoundRunning()) {
           return this.failAck(
@@ -1250,21 +1620,37 @@ export class ClassroomGameSession {
         return this.okAck('NETWORK_MODE_CHANGED', `Network mode set to ${cmd.networkMode}.`);
       }
 
-      case 'set_round_duration': {
-        if (this.runStatus !== 'ready' && this.runStatus !== 'paused') {
+      case 'set_section_budget': {
+        if (!SECTION_ORDER.includes(cmd.section)) {
+          return this.failAck('INVALID_SECTION', 'Unknown section.');
+        }
+        const budget = Math.round(Number(cmd.budgetSec));
+        if (
+          !Number.isFinite(budget) ||
+          budget < GAME_DEFAULTS.minSectionBudgetSec ||
+          budget > GAME_DEFAULTS.maxSectionBudgetSec
+        ) {
           return this.failAck(
-            'MUST_PAUSE_OR_STAGE_FIRST',
-            'Round duration can only be edited while staged (ready) or paused.',
+            'INVALID_BUDGET',
+            `A section's time must be between ${GAME_DEFAULTS.minSectionBudgetSec} and ${GAME_DEFAULTS.maxSectionBudgetSec} seconds.`,
           );
         }
-        const dur = Math.round(Number(cmd.durationSec));
-        if (!Number.isFinite(dur) || dur < 10 || dur > 600) {
-          return this.failAck('INVALID_DURATION', 'Duration must be between 10 and 600 seconds.');
-        }
-        this.durationSec = dur;
+        // The clock keeps its start time. In a live scored game this moves the moment time is up.
+        this.sectionBudgetsSec[cmd.section] = budget;
         this.bumpRevision();
-        this.logEvent('info', `Set round duration to ${dur}s.`);
-        return this.okAck('DURATION_UPDATED', `Duration updated to ${dur}s.`);
+        this.logEvent('info', `Set ${SECTION_LABELS[cmd.section]} time to ${budget}s.`);
+        return this.okAck('SECTION_BUDGET_UPDATED', `${SECTION_LABELS[cmd.section]} time set to ${budget}s.`);
+      }
+
+      case 'restart_section_clock': {
+        const section = this.currentSection();
+        if (!section) {
+          return this.failAck('NO_SECTION_CLOCK', 'This phase has no section clock.');
+        }
+        this.sectionClockStartedAtMs = this.nowFn();
+        this.bumpRevision();
+        this.logEvent('info', `Restarted the ${SECTION_LABELS[section]} clock.`);
+        return this.okAck('SECTION_CLOCK_RESTARTED', `${SECTION_LABELS[section]} clock restarted.`);
       }
 
       case 'load_phase': {
@@ -1274,29 +1660,51 @@ export class ClassroomGameSession {
             'Pause or end the active scored round before loading another phase.',
           );
         }
+        if (!LOADABLE_PHASES.includes(cmd.phase)) {
+          return this.failAck('INVALID_PHASE', 'Unknown phase.');
+        }
+        let topic: DiscussionTopic | null = null;
+        if (cmd.phase === 'discussion') {
+          if (cmd.discussionTopic !== 'before_game1' && cmd.discussionTopic !== 'after_game1') {
+            return this.failAck('INVALID_DISCUSSION_TOPIC', 'Choose which discussion to show.');
+          }
+          topic = cmd.discussionTopic;
+        }
         this.stagePhaseInternal(
           cmd.phase,
-          cmd.scoringEnabled ?? (cmd.phase === 'straight'),
-          cmd.durationSec,
+          Boolean(cmd.scoringEnabled ?? (cmd.phase === 'straight')),
           cmd.seed,
+          topic,
         );
+        // Every load begins a section, so its clock starts over from the full budget
+        this.sectionClockStartedAtMs = this.nowFn();
+        // Whatever the facilitator just loaded is what the room should see
+        this.guideVisible = false;
         this.callbacks.onPhaseOrStatusChanged?.(this.getPublicSnapshot());
-        return this.okAck('PHASE_STAGED', `Staged ${cmd.phase} in ready state.`);
+        return this.okAck(
+          'PHASE_STAGED',
+          `Loaded ${describePhase(this.phase, this.scoringEnabled)}.`,
+        );
       }
 
       case 'start_phase': {
         if (this.phase === 'lobby') {
           return this.failAck('IN_LOBBY', 'Load Training, Straight Race, or Free Water before starting.');
         }
+        if (this.phase === 'discussion' || this.phase === 'leaderboard') {
+          return this.failAck(
+            'NOTHING_TO_START',
+            `${describePhase(this.phase, false)} is already showing; load the next phase when the room is ready.`,
+          );
+        }
         if (this.runStatus !== 'ready') {
           return this.failAck('NOT_STAGED_READY', 'Phase must be staged in ready state to start.');
         }
 
         const warnings = this.computeReadinessWarnings();
-        const isScored =
-          this.phase === 'straight' || (this.phase === 'freewater' && this.scoringEnabled);
+        const isScored = this.isScoredGamePhase();
 
-        if (isScored && this.players.size === 0) {
+        if (isScored && this.seatedPlayerCount() === 0) {
           return this.failAck(
             'NO_PLAYERS_JOINED',
             'At least one team must join before starting a scored round.',
@@ -1324,7 +1732,7 @@ export class ClassroomGameSession {
 
         if (this.phase === 'straight' || this.phase === 'freewater') {
           this.alignParticipatingStartPositions(this.phase);
-          if (this.phase === 'freewater' && this.scoringEnabled) {
+          if (this.phase === 'freewater') {
             this.spawnInitialItems();
           }
         }
@@ -1340,16 +1748,20 @@ export class ClassroomGameSession {
         } else {
           this.runStatus = 'running';
           this.countdownRemainingMs = 0;
-          this.logEvent(
-            'info',
-            `Started ${this.phase === 'training' ? 'Training' : 'Unscored Free-Water Practice'}.`,
-          );
+          this.logEvent('info', `Started ${describePhase(this.phase, this.scoringEnabled)}.`);
         }
 
-        this.pausedForDiscussion = false;
         this.bumpInputEpoch();
         this.bumpRevision();
         this.callbacks.onPhaseOrStatusChanged?.(this.getPublicSnapshot());
+        if (isScored && this.getSectionClock(this.nowFn()).remainingMs <= 0) {
+          this.timeUpArmed = false;
+          this.logEvent('warn', 'Scored round started with no section time left; it will not end by itself.');
+          return this.okAck(
+            'PHASE_STARTED',
+            'Started, but this section has no time left, so the round will not end by itself. Restart the clock or end the round yourself.',
+          );
+        }
         return this.okAck('PHASE_STARTED', 'Phase started.');
       }
 
@@ -1359,13 +1771,9 @@ export class ClassroomGameSession {
         }
         this.runStatus = 'paused';
         this.countdownRemainingMs = 0;
-        this.pausedForDiscussion = Boolean(cmd.forDiscussion);
         this.bumpInputEpoch();
         this.bumpRevision();
-        this.logEvent(
-          'info',
-          cmd.forDiscussion ? 'Paused activity for classroom discussion.' : 'Paused activity.',
-        );
+        this.logEvent('info', 'Paused activity.');
         this.callbacks.onPhaseOrStatusChanged?.(this.getPublicSnapshot());
         return this.okAck('PHASE_PAUSED', 'Phase paused; active timer and positions frozen.');
       }
@@ -1375,7 +1783,6 @@ export class ClassroomGameSession {
           return this.failAck('NOT_PAUSED', 'Phase is not paused.');
         }
         this.runStatus = 'running';
-        this.pausedForDiscussion = false;
         this.guideVisible = false;
         this.bumpInputEpoch();
         this.bumpRevision();
@@ -1388,10 +1795,13 @@ export class ClassroomGameSession {
         if (this.phase === 'lobby') {
           return this.failAck('IN_LOBBY', 'No active round in lobby.');
         }
+        if (this.phase === 'discussion' || this.phase === 'leaderboard') {
+          return this.failAck('NO_ROUND_TO_END', 'This phase has no round; load the next phase instead.');
+        }
         if (this.runStatus === 'finished') {
           return this.okAck('ALREADY_FINISHED', 'Round already finished.');
         }
-        this.finishRoundInternal('Round ended by facilitator.');
+        this.finishRoundInternal('Round ended by facilitator.', 'facilitator');
         return this.okAck('ROUND_ENDED', 'Round ended.');
       }
 
@@ -1462,7 +1872,8 @@ export class ClassroomGameSession {
         if (this.phase !== 'straight' && this.phase !== 'freewater') {
           return this.failAck('NOT_A_GAME_PHASE', 'Load Straight Race or Free Water to reset a round.');
         }
-        this.stagePhaseInternal(this.phase, this.scoringEnabled, this.durationSec, cmd.seed);
+        // Same section, new attempt: the section clock keeps running
+        this.stagePhaseInternal(this.phase, this.scoringEnabled, cmd.seed, null);
         this.logEvent('info', `Reset ${this.phase} round to ready state (new roundId ${this.roundId}).`);
         this.callbacks.onPhaseOrStatusChanged?.(this.getPublicSnapshot());
         return this.okAck('ROUND_RESET', 'Round reset to staged ready state.');
@@ -1480,14 +1891,19 @@ export class ClassroomGameSession {
         this.phase = 'lobby';
         this.runStatus = 'ready';
         this.scoringEnabled = false;
-        this.pausedForDiscussion = false;
+        this.discussionTopic = null;
         this.admissionLocked = false;
-        this.guideVisible = false;
+        this.guideVisible = true;
+        this.gameResults = { straight: null, freewater: null };
+        this.leaderboardStandings = [];
         this.activeElapsedMs = 0;
         this.countdownRemainingMs = 0;
+        // Back in the lobby: the joining clock waits for the first player or the facilitator
+        this.sectionClockStartedAtMs = null;
         this.items = [];
         this.teams.clear();
         this.players.clear();
+        this.nextJoinOrder = 1;
         this.playersByResumeToken.clear();
         this.playersBySocketId.clear();
         this.acceptedStrokes.clear();
@@ -1519,14 +1935,14 @@ export class ClassroomGameSession {
   }
 
   private stagePhaseInternal(
-    phase: 'training' | 'straight' | 'freewater',
+    phase: LoadablePhase,
     scoringEnabled: boolean,
-    explicitDurationSec?: number,
-    explicitSeed?: number,
+    explicitSeed: number | undefined,
+    discussionTopic: DiscussionTopic | null,
   ): void {
     this.phase = phase;
     this.runStatus = 'ready';
-    this.pausedForDiscussion = false;
+    this.discussionTopic = phase === 'discussion' ? discussionTopic : null;
     this.roundId = makeId('rnd');
     this.activeElapsedMs = 0;
     this.countdownRemainingMs = 0;
@@ -1540,26 +1956,14 @@ export class ClassroomGameSession {
     }
     this.rng = createSeededRng(this.seed);
 
-    if (phase === 'training') {
-      this.scoringEnabled = false;
-      this.durationSec = explicitDurationSec ?? 0;
-      this.items = [];
-    } else if (phase === 'straight') {
-      this.scoringEnabled = true;
-      this.durationSec = explicitDurationSec ?? GAME_DEFAULTS.straightRaceDurationSec;
-      this.items = [];
-    } else {
-      this.scoringEnabled = scoringEnabled;
-      this.durationSec =
-        explicitDurationSec ??
-        (scoringEnabled
-          ? GAME_DEFAULTS.freewaterScoredDurationSec
-          : GAME_DEFAULTS.freewaterPracticeDurationSec);
-    }
+    // Only the two games have an unscored prep variant; training, discussion, and leaderboard are unscored
+    this.scoringEnabled = (phase === 'straight' || phase === 'freewater') && scoringEnabled;
+    // Armed again by the first tick that finds section time left
+    this.timeUpArmed = false;
 
     this.alignParticipatingStartPositions(phase);
 
-    if (phase === 'freewater' && this.scoringEnabled) {
+    if (phase === 'freewater') {
       this.spawnInitialItems();
     } else {
       this.items = [];
@@ -1569,7 +1973,7 @@ export class ClassroomGameSession {
     this.bumpRevision();
     this.logEvent(
       'info',
-      `Staged phase ${phase} (${this.scoringEnabled ? 'scored' : 'unscored'}, round ${this.roundId}).`,
+      `Staged ${describePhase(phase, this.scoringEnabled)} (${this.scoringEnabled ? 'scored' : 'unscored'}, round ${this.roundId}).`,
     );
   }
 
@@ -1578,6 +1982,8 @@ export class ClassroomGameSession {
     participating.forEach((team, idx) => {
       team.latestAcknowledgment = null;
       team.sim = this.createInitialTeamSim(idx, participating.length, phase);
+      team.syncGroup = null;
+      team.stats = emptyRoundStats();
     });
   }
 
@@ -1586,6 +1992,7 @@ export class ClassroomGameSession {
     this.itemCounter = 0;
     for (let i = 0; i < GAME_DEFAULTS.targetActiveItems; i++) {
       const pos = this.findFairItemPosition(this.items);
+      const variant = this.pickItemVariant(this.items);
       this.itemCounter += 1;
       this.items.push({
         itemId: `itm_${this.roundId}_${this.itemCounter}`,
@@ -1593,12 +2000,32 @@ export class ClassroomGameSession {
         y: pos.y,
         radius: GAME_DEFAULTS.itemCollisionRadius,
         available: true,
-        variant: i % 2 === 0 ? 'golden_bug' : 'glow_seed',
+        variant,
+        points: POND_ITEMS[variant].points,
         collectedByTeam: null,
         collectedAtMs: null,
         respawnRemainingMs: null,
       });
     }
+  }
+
+  /**
+   * Weighted pick of the next item's kind from the round's seeded generator, skipping any kind that
+   * already has its maximum number in the water.
+   */
+  private pickItemVariant(othersInWater: InternalItemRecord[]): PondItemVariant {
+    const active = new Map<PondItemVariant, number>();
+    for (const it of othersInWater) {
+      if (it.available) active.set(it.variant, (active.get(it.variant) ?? 0) + 1);
+    }
+    const allowed = POND_ITEM_ORDER.filter((v) => (active.get(v) ?? 0) < POND_ITEMS[v].maxActive);
+    const totalWeight = allowed.reduce((sum, v) => sum + POND_ITEMS[v].spawnWeight, 0);
+    let roll = this.rng() * totalWeight;
+    for (const v of allowed) {
+      roll -= POND_ITEMS[v].spawnWeight;
+      if (roll < 0) return v;
+    }
+    return 'glow_seed';
   }
 
   private findFairItemPosition(existingItems: InternalItemRecord[] = this.items): { x: number; y: number } {
@@ -1702,20 +2129,14 @@ export class ClassroomGameSession {
       });
     }
 
-    const totalMs = this.durationSec > 0 ? this.durationSec * 1000 : 0;
-    const remainingMs =
-      totalMs > 0 ? Math.max(0, Math.round(totalMs - this.activeElapsedMs)) : 0;
-
     const round: RoundPublicState = {
       roundId: this.roundId,
       phase: this.phase,
       scoringEnabled: this.scoringEnabled,
       runStatus: this.runStatus,
-      pausedForDiscussion: this.pausedForDiscussion,
+      discussionTopic: this.discussionTopic,
       seed: this.seed,
-      durationSec: this.durationSec,
       activeElapsedMs: Math.round(this.activeElapsedMs),
-      remainingMs,
       countdownRemainingMs: Math.round(this.countdownRemainingMs),
       courseLength: GAME_DEFAULTS.straightCourseLength,
       arenaWidth: GAME_DEFAULTS.arenaWidth,
@@ -1727,6 +2148,7 @@ export class ClassroomGameSession {
         radius: it.radius,
         available: it.available,
         variant: it.variant,
+        points: it.points,
         collectedByTeam: it.collectedByTeam,
         collectedAtMs: it.collectedAtMs,
       })),
@@ -1743,6 +2165,7 @@ export class ClassroomGameSession {
       networkModeVersion: this.networkModeVersion,
       admissionLocked: this.admissionLocked,
       guideVisible: this.guideVisible,
+      musicEnabled: this.musicEnabled,
       minTeamSize: this.minTeamSize,
       maxTeamSize: this.maxTeamSize,
       maxTeamNumber: MAX_TEAM_NUMBER,
@@ -1750,6 +2173,14 @@ export class ClassroomGameSession {
       devSimAvailable: this.devSimAvailable,
       teams: teamsOut,
       round,
+      sectionClock: this.getSectionClock(nowMs),
+      sectionBudgetsSec: { ...this.sectionBudgetsSec },
+      // Results are replaced whole when a scored round finishes, never mutated in place
+      leaderboard: {
+        straight: this.gameResults.straight,
+        freewater: this.gameResults.freewater,
+        standings: this.leaderboardStandings,
+      },
     };
   }
 
@@ -1757,13 +2188,19 @@ export class ClassroomGameSession {
     const nowMs = this.nowFn();
     const session = this.getPublicSnapshot();
     const players: HostPlayerDiagnostic[] = [...this.players.values()]
-      .sort((a, b) => a.teamNumber - b.teamNumber || a.limbIndex - b.limbIndex)
+      .sort(
+        (a, b) =>
+          a.teamNumber - b.teamNumber ||
+          Number(b.seated) - Number(a.seated) ||
+          a.joinOrder - b.joinOrder,
+      )
       .map((p) => ({
         playerId: p.playerId,
         playerName: p.playerName,
         teamNumber: p.teamNumber,
         limbIndex: p.limbIndex,
-        limbLabel: p.limbLabel,
+        limbLabel: p.seated ? p.limbLabel : 'Limb released',
+        seated: p.seated,
         gestureId: p.assignment.gestureId,
         gestureInstruction: GESTURE_SPECS[p.assignment.gestureId].instruction,
         connected: p.connected,
@@ -1791,7 +2228,7 @@ export class ClassroomGameSession {
 
   computeReadinessWarnings(): string[] {
     const warnings: string[] = [];
-    if (this.players.size === 0) {
+    if (this.seatedPlayerCount() === 0) {
       warnings.push('No players have joined any team yet.');
       return warnings;
     }

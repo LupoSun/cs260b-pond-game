@@ -1,6 +1,7 @@
 import { GAME_DEFAULTS, getLimbLayout } from '../shared/constants.js';
 import type {
   PondItemPublicState,
+  PondItemVariant,
   SessionPublicSnapshot,
   TeamAccessory,
   TeamPublicState,
@@ -9,8 +10,22 @@ import type {
 export interface TransientVisualEffects {
   /** Keyed by `${teamNumber}:${limbIndex}` -> local performance.now() timestamp when accepted */
   limbAcceptedFlashAtMs: Map<string, number>;
-  /** Keyed by itemId -> { x, y, teamColor, atMs } for collection pop bursts */
-  itemPops: Map<string, { x: number; y: number; colorHex: string; atMs: number }>;
+  /**
+   * Collection pop bursts, keyed by award. The item's kind sets how loud the effect is:
+   * a seed gets a small pop, a golden bug a bigger one, a pond star fills the arena.
+   */
+  itemPops: Map<
+    string,
+    {
+      x: number;
+      y: number;
+      colorHex: string;
+      atMs: number;
+      variant?: PondItemVariant;
+      points?: number;
+      teamNumber?: number;
+    }
+  >;
 }
 
 export interface DrawCreatureOptions {
@@ -29,6 +44,8 @@ export interface DrawCreatureOptions {
   localFocusLimbHeld?: boolean;
   localFocusLimbProgress?: number;
   showLimbLabels?: boolean;
+  /** Keep limb label pills inside this box (a card, or a race lane) */
+  labelBounds?: { minX: number; minY: number; maxX: number; maxY: number };
   isPaused?: boolean;
 }
 
@@ -397,6 +414,48 @@ export function drawCardBackdrop(
    Creature
    ---------------------------------------------------------------------------- */
 
+/** Limb label pill sized for a bare limb number; name pills are placed relative to it. */
+const NUMBER_PILL_W = 23;
+const NUMBER_PILL_H = 19;
+
+const fittedLabelCache = new Map<string, { text: string; width: number }>();
+
+/**
+ * Shortens a limb label with an ellipsis until it fits `maxWidth` in the context's current font.
+ * Cached because the same few names are measured on every animation frame.
+ */
+function fitLabelText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): { text: string; width: number } {
+  const key = `${ctx.font}|${Math.round(maxWidth)}|${text}`;
+  const hit = fittedLabelCache.get(key);
+  if (hit) return hit;
+
+  let fitted = text;
+  let width = ctx.measureText(fitted).width;
+  if (width > maxWidth) {
+    const points = Array.from(text);
+    while (points.length > 1 && width > maxWidth) {
+      points.pop();
+      fitted = `${points.join('').trimEnd()}…`;
+      width = ctx.measureText(fitted).width;
+    }
+  }
+  if (fittedLabelCache.size > 600) fittedLabelCache.clear();
+  const result = { text: fitted, width };
+  fittedLabelCache.set(key, result);
+  return result;
+}
+
+/** Distance from a w×h box's center to its edge along the unit direction (ux, uy). */
+function boxReach(halfW: number, halfH: number, ux: number, uy: number): number {
+  const alongX = Math.abs(ux) > 1e-6 ? halfW / Math.abs(ux) : Infinity;
+  const alongY = Math.abs(uy) > 1e-6 ? halfH / Math.abs(uy) : Infinity;
+  return Math.min(alongX, alongY);
+}
+
 /**
  * Renders the modular comic pond-bulb creature with all 8 specification layers (Section 11.2):
  * 1. Hard offset water shadow
@@ -406,7 +465,7 @@ export function drawCardBackdrop(
  * 5. Localized limb recognition highlight (~340ms green starburst + splash droplets)
  * 6. Inked, cel-shaded body with halftone shadow and an expressive face
  * 7. Non-color-only team accessory + team number badge
- * 8. Upright, rotation-invariant Limb-ID label badges + persistent readiness checkmarks
+ * 8. Upright, rotation-invariant limb name pills + persistent readiness checkmarks
  *
  * Note: Procedural comic vector artwork used for engineering release; documented in asset inventory.
  */
@@ -425,6 +484,7 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
     localFocusLimbHeld,
     localFocusLimbProgress,
     showLimbLabels = true,
+    labelBounds,
     isPaused = false,
   } = opts;
 
@@ -487,6 +547,7 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
     connected: boolean;
     hasSucceeded: boolean;
     assigned: boolean;
+    playerName: string | null;
   }> = [];
 
   let strokeBoost = 0;
@@ -679,6 +740,7 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       connected: Boolean(limbState?.connected),
       hasSucceeded: Boolean(limbState?.hasSucceededStroke),
       assigned: limbState?.assignedPlayerId !== null,
+      playerName: limbState?.playerName ?? null,
     });
   }
 
@@ -827,21 +889,112 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
   comicText(ctx, String(team.teamNumber), centerX, centerY + badgeR * 0.08, badgeR * 1.45, INK, 0);
   ctx.restore();
 
-  // Layer 8: Upright Limb-ID Labels (always horizontal regardless of creature rotation!)
+  // Layer 8: Upright limb labels (always horizontal regardless of creature rotation!)
+  // Each pill carries the player's nickname; a limb nobody holds shows its number instead.
   if (showLimbLabels) {
     ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Names are longer than the old limb numbers, so the lettering grows with the creature
+    const baseFontPx = Math.max(12, Math.min(16.5, r * 0.34));
+    const maxTextW = Math.max(44, Math.min(150, r * 2.0));
+
+    // Two teammates may pick the same nickname; the limb number then tells them apart
+    const nameCounts = new Map<string, number>();
     for (const anchor of limbWorldLabelAnchors) {
+      if (!anchor.playerName) continue;
+      const key = anchor.playerName.toLocaleLowerCase();
+      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    }
+
+    const pills = limbWorldLabelAnchors.map((anchor) => {
       const isFocus = focusLimbIndex === anchor.limbIndex;
+      const fontPx = isFocus ? baseFontPx + 1.5 : baseFontPx;
+      const font = `700 ${fontPx}px ${BODY_FONT}`;
+      ctx.font = font;
+
+      const limbNumber = String(anchor.limbIndex + 1);
+      const isShared =
+        anchor.playerName !== null &&
+        (nameCounts.get(anchor.playerName.toLocaleLowerCase()) ?? 0) > 1;
+      const suffix = `${isShared ? ` ${limbNumber}` : ''}${anchor.hasSucceeded ? '✓' : ''}`;
+      const suffixW = suffix ? ctx.measureText(suffix).width : 0;
+      const fitted = fitLabelText(ctx, anchor.playerName ?? limbNumber, maxTextW - suffixW);
+
+      const padX = isFocus ? 8 : 6.5;
+      const minW = isFocus ? 34 : anchor.hasSucceeded ? 30 : NUMBER_PILL_W;
+      const w = Math.max(minW, Math.ceil(fitted.width + suffixW) + padX * 2);
+      const h = Math.round(fontPx + (isFocus ? 9.5 : 7));
+
+      // The anchor is where a bare-number pill sits. A wider pill slides outward along the
+      // limb's direction so its near edge stays put and the paddle is not covered.
+      let ux = anchor.x - centerX;
+      let uy = anchor.y - centerY;
+      const dist = Math.hypot(ux, uy) || 1;
+      ux /= dist;
+      uy /= dist;
+      const slide = Math.max(
+        0,
+        boxReach(w / 2, h / 2, ux, uy) - boxReach(NUMBER_PILL_W / 2, NUMBER_PILL_H / 2, ux, uy),
+      );
+
+      return {
+        anchor,
+        isFocus,
+        font,
+        text: `${fitted.text}${suffix}`,
+        w,
+        h,
+        x: anchor.x + ux * slide,
+        y: anchor.y + uy * slide,
+      };
+    });
+
+    // Neighbouring name pills would stack on top of each other, so nudge overlapping pairs apart
+    // along the line between their centers, then pull everything back inside the allowed box.
+    const GAP = 3;
+    for (let pass = 0; pass < 8; pass++) {
+      for (let i = 0; i < pills.length; i++) {
+        for (let j = i + 1; j < pills.length; j++) {
+          const a = pills[i];
+          const b = pills[j];
+          const needX = (a.w + b.w) / 2 + GAP;
+          const needY = (a.h + b.h) / 2 + GAP;
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          if (Math.abs(dx) >= needX || Math.abs(dy) >= needY) continue;
+          let d = Math.hypot(dx, dy);
+          if (d < 0.01) {
+            dx = 1;
+            dy = 0;
+            d = 1;
+          }
+          const push = (boxReach(needX, needY, dx / d, dy / d) - d) / 2;
+          a.x -= (dx / d) * push;
+          a.y -= (dy / d) * push;
+          b.x += (dx / d) * push;
+          b.y += (dy / d) * push;
+        }
+      }
+      if (labelBounds) {
+        for (const pill of pills) {
+          const loX = labelBounds.minX + pill.w / 2;
+          const hiX = labelBounds.maxX - pill.w / 2;
+          const loY = labelBounds.minY + pill.h / 2;
+          const hiY = labelBounds.maxY - pill.h / 2;
+          if (hiX >= loX) pill.x = Math.max(loX, Math.min(hiX, pill.x));
+          if (hiY >= loY) pill.y = Math.max(loY, Math.min(hiY, pill.y));
+        }
+      }
+    }
+
+    for (const pill of pills) {
+      const { anchor, isFocus, w: pillW, h: pillH } = pill;
       const inFlash =
         anchor.acceptedAgeMs !== null &&
         anchor.acceptedAgeMs >= 0 &&
         anchor.acceptedAgeMs <= FLASH_MS + 10;
-
-      const labelText = anchor.hasSucceeded
-        ? `${anchor.limbIndex + 1}✓`
-        : `${anchor.limbIndex + 1}`;
-      const pillW = isFocus ? 34 : anchor.hasSucceeded ? 30 : 23;
-      const pillH = isFocus ? 23 : 19;
 
       let bg = PAPER;
       let fg = INK;
@@ -866,11 +1019,11 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       }
 
       // Hard offset shadow, then the pill
-      roundRect(ctx, anchor.x - pillW / 2 + 1.5, anchor.y - pillH / 2 + 2, pillW, pillH, 7);
+      roundRect(ctx, pill.x - pillW / 2 + 1.5, pill.y - pillH / 2 + 2, pillW, pillH, 7);
       ctx.fillStyle = INK;
       ctx.fill();
 
-      roundRect(ctx, anchor.x - pillW / 2, anchor.y - pillH / 2, pillW, pillH, 7);
+      roundRect(ctx, pill.x - pillW / 2, pill.y - pillH / 2, pillW, pillH, 7);
       ctx.fillStyle = bg;
       ctx.fill();
       ctx.strokeStyle = INK;
@@ -880,10 +1033,8 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       ctx.setLineDash([]);
 
       ctx.fillStyle = fg;
-      ctx.font = `700 ${isFocus ? 13.5 : 12}px ${BODY_FONT}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(labelText, anchor.x, anchor.y + 0.5);
+      ctx.font = pill.font;
+      ctx.fillText(pill.text, pill.x, pill.y + 0.5);
     }
     ctx.restore();
   }
@@ -1142,8 +1293,37 @@ export function drawStraightRaceScene(
       reducedMotion,
       effects,
       showLimbLabels: true,
+      // Name pills stay inside the team's own lane and off its lane sign
+      labelBounds: { minX: 112, minY: topY + 7, maxX: W - 4, maxY: topY + laneH - 7 },
       isPaused: snapshot.runStatus === 'paused',
     });
+
+    // Scored race only: call out how many limbs just landed together. Game 1 Prep stays silent so the
+    // class can discover the rule before the "what makes you fast?" discussion.
+    const syncAgeMs =
+      team.sim.syncAtMs === null ? Infinity : snapshot.serverNowMs - team.sim.syncAtMs;
+    if (
+      snapshot.round.scoringEnabled &&
+      running &&
+      !team.sim.finished &&
+      team.limbCount >= 2 &&
+      team.sim.syncCount >= 2 &&
+      syncAgeMs < 900
+    ) {
+      const allTogether = team.sim.syncCount >= team.limbCount;
+      const label = allTogether ? 'ALL TOGETHER!' : `${team.sim.syncCount} OF ${team.limbCount} TOGETHER`;
+      const size = Math.max(13, Math.min(26, laneH * 0.17)) * (allTogether ? 1.15 : 1);
+      ctx.save();
+      ctx.font = `${Math.round(size)}px ${DISPLAY_FONT}`;
+      const halfW = ctx.measureText(label).width / 2;
+      ctx.restore();
+      // Open water ahead of the creature keeps the callout off its limb labels; close to the
+      // finish strip it moves behind instead.
+      const clearance = radius * 2.3;
+      const aheadX = drawX + clearance + halfW;
+      const tagX = aheadX + halfW < finishX - 40 ? aheadX : drawX - clearance - halfW;
+      comicText(ctx, label, tagX, midY, size, allTogether ? COMIC_YELLOW : PAPER, 4);
+    }
 
     // Finish starburst in lane (rank and time, never color-only)
     if (team.sim.finished && team.sim.rank !== null) {
@@ -1273,30 +1453,78 @@ export function drawFreewaterScene(
     });
   }
 
-  // Transient item collection callouts: team-rimmed starburst, smoke puffs and a rising "+1"
-  const POP_MS = 640;
+  // Transient item collection callouts, scaled to what was caught:
+  //   glow seed  -> small starburst and "+100"
+  //   golden bug -> bigger spinning burst, more smoke, "NICE!"
+  //   pond star  -> arena-wide flash, shockwave ring, double burst, "JACKPOT!"
+  const arenaW = snapshot.round.arenaWidth;
+  const arenaH = snapshot.round.arenaHeight;
   for (const [id, pop] of effects.itemPops.entries()) {
+    const tier = pop.variant === 'pond_star' ? 2 : pop.variant === 'golden_bug' ? 1 : 0;
+    const popMs = [640, 980, 1750][tier];
+    const size = [1, 1.45, 2.3][tier];
     const age = nowMs - pop.atMs;
-    if (age > POP_MS) {
+    if (age > popMs) {
       effects.itemPops.delete(id);
       continue;
     }
-    const u = Math.max(0, age / POP_MS);
-    const grow = reducedMotion ? 1 : 0.35 + 0.65 * easeOutExpo(u * 1.8);
+    const u = Math.max(0, age / popMs);
+    const grow = reducedMotion ? 1 : 0.35 + 0.65 * easeOutExpo(u * (tier === 2 ? 3.2 : 1.8));
+    const fade = u > 0.72 ? Math.max(0, 1 - (u - 0.72) / 0.28) : 1;
+    // Keep the lettering of a big pop on screen even when the item sat near a wall
+    const margin = 84 * size;
+    const px = Math.max(margin, Math.min(arenaW - margin, pop.x));
+    const py = Math.max(margin, Math.min(arenaH - margin * 0.6, pop.y));
+
     ctx.save();
-    ctx.globalAlpha = u > 0.72 ? Math.max(0, 1 - (u - 0.72) / 0.28) : 1;
-    drawBurst(ctx, pop.x, pop.y, 58 * grow, 36 * grow, 10, 0.3, 4, pop.colorHex, 3.5, 4);
-    drawBurst(ctx, pop.x, pop.y, 42 * grow, 27 * grow, 10, 0.3, 4, COMIC_YELLOW, 3);
-    if (!reducedMotion) {
-      for (const [dx, dy] of [
-        [-1, -0.5],
-        [1, -0.35],
-        [0.1, 1],
-      ]) {
-        drawPuff(ctx, pop.x + dx * (40 + u * 46), pop.y + dy * (34 + u * 40), 9 * (1 - u * 0.4), 2.2);
+    if (tier === 2 && !reducedMotion) {
+      // Flash, then a shockwave ring racing outward from the catch
+      if (u < 0.2) {
+        ctx.fillStyle = `rgba(255, 217, 26, ${0.42 * (1 - u / 0.2)})`;
+        ctx.fillRect(0, 0, arenaW, arenaH);
+      }
+      for (const lag of [0, 0.14]) {
+        const ru = u - lag;
+        if (ru <= 0 || ru >= 0.7) continue;
+        ctx.globalAlpha = 1 - ru / 0.7;
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 16 * (1 - ru / 0.7) + 3;
+        ctx.beginPath();
+        ctx.arc(pop.x, pop.y, 50 + ru * 900, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = COMIC_YELLOW;
+        ctx.lineWidth = 9 * (1 - ru / 0.7) + 1.5;
+        ctx.stroke();
       }
     }
-    comicText(ctx, '+1', pop.x, pop.y - (reducedMotion ? 0 : u * 10), 34 * grow, PAPER, 6, 2.5);
+
+    ctx.globalAlpha = fade;
+    const spin = reducedMotion ? 0 : u * 0.9 * tier;
+    if (tier === 2) {
+      drawBurst(ctx, px, py, 78 * size * grow, 50 * size * grow, 16, -spin, 6, PAPER, 4, 6);
+    }
+    drawBurst(ctx, px, py, 58 * size * grow, 36 * size * grow, 10 + tier * 2, 0.3 + spin, 4, pop.colorHex, 3.5, 4);
+    drawBurst(ctx, px, py, 42 * size * grow, 27 * size * grow, 10 + tier * 2, 0.3 - spin, 4, COMIC_YELLOW, 3);
+    if (!reducedMotion) {
+      const puffs = [3, 6, 10][tier];
+      for (let k = 0; k < puffs; k++) {
+        const a = (k / puffs) * Math.PI * 2 + 0.5;
+        const reach = (40 + u * 52) * size;
+        drawPuff(ctx, px + Math.cos(a) * reach, py + Math.sin(a) * reach * 0.82, 9 * size * (1 - u * 0.4), 2.2);
+      }
+    }
+    const rise = reducedMotion ? 0 : u * 10 * size;
+    const pointsText = `+${pop.points ?? 100}`;
+    if (tier === 0) {
+      comicText(ctx, pointsText, px, py - rise, 32 * grow, PAPER, 6, 2.5);
+    } else if (tier === 1) {
+      comicText(ctx, 'NICE!', px, py - 26 * grow - rise, 27 * grow, COMIC_YELLOW, 5, 2.5);
+      comicText(ctx, pointsText, px, py + 12 * grow - rise, 46 * grow, PAPER, 7, 3);
+    } else {
+      const who = pop.teamNumber !== undefined ? `TEAM ${pop.teamNumber} ` : '';
+      comicText(ctx, `${who}JACKPOT!`, px, py - 58 * grow - rise, 46 * grow, COMIC_YELLOW, 8, 4);
+      comicText(ctx, pointsText, px, py + 14 * grow - rise, 96 * grow, PAPER, 10, 5);
+    }
     ctx.restore();
   }
 }
@@ -1331,9 +1559,53 @@ function drawPondCollectible(
   ctx.fill();
 
   ctx.translate(0, bob);
+  // Rarer items are drawn larger; the contact ring above stays at the true collision radius
+  const drawScale = item.variant === 'pond_star' ? 1.55 : item.variant === 'golden_bug' ? 1.15 : 1;
+  ctx.scale(drawScale, drawScale);
   ctx.strokeStyle = INK;
 
-  if (item.variant === 'golden_bug') {
+  if (item.variant === 'pond_star') {
+    // Slowly turning halo of rays behind the star
+    const turn = reducedMotion ? 0 : nowMs / 900;
+    ctx.save();
+    ctx.rotate(turn);
+    ctx.fillStyle = 'rgba(255, 240, 163, 0.85)';
+    for (let k = 0; k < 8; k++) {
+      const a0 = (k / 8) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, r * 1.28, a0, a0 + Math.PI / 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Five-point star with a cel shadow
+    const pulse = reducedMotion ? 1 : 1 + 0.06 * Math.sin(phase * 2.2);
+    const starPath = (outer: number, inner: number) => {
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + (i / 10) * Math.PI * 2;
+        const rad = i % 2 === 0 ? outer : inner;
+        if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+        else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+      }
+      ctx.closePath();
+    };
+    ctx.fillStyle = '#e09a00';
+    ctx.lineWidth = 3;
+    starPath(r * 0.92 * pulse, r * 0.42 * pulse);
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = COMIC_YELLOW;
+    ctx.beginPath();
+    ctx.arc(-r * 0.16, -r * 0.2, r * 0.78, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    starPath(r * 0.92 * pulse, r * 0.42 * pulse);
+    ctx.stroke();
+  } else if (item.variant === 'golden_bug') {
     // Wings
     ctx.fillStyle = PAPER;
     ctx.lineWidth = 2.4;
@@ -1409,4 +1681,10 @@ function drawPondCollectible(
   ctx.stroke();
 
   ctx.restore();
+
+  // Point value under the items worth more than the common seed, so teams can see what to chase
+  if (item.variant !== 'glow_seed') {
+    const big = item.variant === 'pond_star';
+    comicText(ctx, String(item.points), item.x, item.y + r * drawScale + (big ? 17 : 13), big ? 23 : 16, big ? COMIC_YELLOW : PAPER, big ? 5 : 4, big ? 2 : 0);
+  }
 }
