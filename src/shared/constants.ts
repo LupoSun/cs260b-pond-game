@@ -323,14 +323,37 @@ export const GAME_DEFAULTS = {
  * Open-water collectibles, common to rare (engineering defaults, untuned in a classroom).
  * `spawnWeight` is the relative chance a newly placed item is this kind; `maxActive` caps how many
  * can be in the water at once, which is what keeps the star rare.
+ *
+ * `nearTrailingTeam` is the catch-up rule (owner's decision, revision 0.6): the more an item is
+ * worth, the closer to the lowest-scoring team it appears. It gives the ring of distances, in arena
+ * units from that creature's center, the item is placed in. `null` means anywhere in the pond.
+ * A creature covers at most about 42 units a second, so the star lands a few seconds' swim away.
  */
 export const POND_ITEMS: Record<
   PondItemVariant,
-  { label: string; points: number; spawnWeight: number; maxActive: number }
+  {
+    label: string;
+    points: number;
+    spawnWeight: number;
+    maxActive: number;
+    nearTrailingTeam: { minDist: number; maxDist: number } | null;
+  }
 > = {
-  glow_seed: { label: 'Glow Seed', points: 100, spawnWeight: 62, maxActive: Infinity },
-  golden_bug: { label: 'Golden Bug', points: 300, spawnWeight: 30, maxActive: 4 },
-  pond_star: { label: 'Pond Star', points: 1000, spawnWeight: 8, maxActive: 1 },
+  glow_seed: { label: 'Glow Seed', points: 100, spawnWeight: 62, maxActive: Infinity, nearTrailingTeam: null },
+  golden_bug: {
+    label: 'Golden Bug',
+    points: 300,
+    spawnWeight: 30,
+    maxActive: 4,
+    nearTrailingTeam: { minDist: 230, maxDist: 420 },
+  },
+  pond_star: {
+    label: 'Pond Star',
+    points: 1000,
+    spawnWeight: 8,
+    maxActive: 1,
+    nearTrailingTeam: { minDist: 110, maxDist: 230 },
+  },
 };
 export const POND_ITEM_ORDER: PondItemVariant[] = ['glow_seed', 'golden_bug', 'pond_star'];
 
@@ -436,3 +459,44 @@ export function formatSectionClock(remainingMs: number): string {
   const secs = totalSec % 60;
   return `${over && totalSec > 0 ? '-' : ''}${mins}:${secs.toString().padStart(2, '0')}`;
 }
+
+/** Background music loudness on the classroom display, 0..100 (facilitator setting) */
+export const MUSIC_VOLUME_DEFAULT = 70;
+
+/**
+ * Emoji handed out at random, one per player, and shown in front of the nickname on the limb and
+ * on the phone (owner's decision, revision 0.6). The pool is picked to be as different from one
+ * another as possible at label size: different silhouettes and colors, no two faces alike, no
+ * variation-selector or joined sequences (they render inconsistently), nothing newer than 2016 so
+ * every phone has the glyph, and nothing that could be mistaken for a game item or a status mark
+ * (no stars, bugs, seeds, or check marks). 48 entries for at most 30 players, so nobody shares.
+ */
+export const PLAYER_EMOJI_POOL: readonly string[] = [
+  // animals
+  '🦊', '🐸', '🐙', '🐧', '🦄', '🐝', '🦋', '🐳', '🦉', '🐷', '🐘', '🦀', '🐠', '🦆',
+  // food
+  '🍉', '🍋', '🍇', '🍓', '🍩', '🍕', '🍄', '🍔', '🍦', '🍭',
+  // nature
+  '🌵', '🌸', '🌈', '⚡', '🔥', '🌍', '⛄',
+  // things
+  '🚀', '🎈', '🎸', '⚽', '🎲', '💎', '👑', '🤖', '👻', '👽', '🎃', '⚓', '🎩', '⛵', '🎯', '🎁', '☔',
+];
+
+/**
+ * The how-to-play guide is revealed in this order, one step at a time from Mission Control, so the
+ * facilitator can explain before phones come out (owner's decision, revision 0.7). Step n shows
+ * everything up to and including entry n. The QR code and join address come last.
+ */
+export const GUIDE_STEPS: ReadonlyArray<{ id: 'game' | 'join' | 'motion' | 'sweeps' | 'qr'; label: string }> = [
+  { id: 'game', label: 'The Game' },
+  { id: 'join', label: 'Step 1: Scan & Join (QR still hidden)' },
+  { id: 'motion', label: 'Step 2: Allow Motion' },
+  { id: 'sweeps', label: 'Step 3: Learn Your Sweep' },
+  { id: 'qr', label: 'QR code and join address' },
+];
+
+/**
+ * This project's public source repository (the `origin` remote). Shown as a QR code on the
+ * leaderboard so the class can find the code. Change it here if the repository moves.
+ */
+export const PROJECT_REPO_URL = 'https://github.com/LupoSun/cs260b-pond-game';

@@ -8,8 +8,8 @@ Teams of 4–6. At most 30 players. The phone recognizes the motion locally; the
 
 ## How it plays
 
-1. Players enter a nickname and the team number they were given, enable motion, hold still to calibrate, then practice a few strokes.
-2. The shared display shows each creature with every player's nickname on their own paddle, and which paddles are live, calibrated, or still learning. Practice sweeps show up on the team's card as they happen.
+1. Players enter a nickname and the team number they were given, are handed a random emoji as their badge, enable motion, hold still to calibrate, then practice a few strokes.
+2. The shared display shows each creature with every player's emoji and nickname on their own paddle, and which paddles are live, calibrated, or still learning. Practice sweeps show up on the team's card as they happen.
 3. **Game 1** is a straight race down parallel lanes. A creature is fast only when its limbs stroke at the same moment: the more limbs in sync, the faster. The race keeps going after the first finisher and ends when the last creature is home or time is up.
 4. **Game 2** (optional) is open water with steering and collectibles worth different points: glow seeds 100, golden bugs 300, and a rare pond star 1,000. A big live scoreboard sits beside the water.
 5. A leaderboard closes the session.
@@ -66,7 +66,7 @@ The phase picker lists the session in running order. Pick a step and press **Loa
 
 | # | Step | Planned | What the room sees | You press |
 | --- | --- | --- | --- | --- |
-| 1 | Explanation and joining | 4 min | How-to-play page with the join QR. A fresh session opens on it. | Nothing, or **Hide Guide** to show the lobby |
+| 1 | Explanation and joining | 4 min | How-to-play page, revealed a step at a time. A fresh session opens on its first card, The Game. The join QR comes last. | **Next** in panel 3 for each step; **Hide Guide** shows the lobby |
 | 2 | Training | 2 min | Press / Move / Release how-to and lock-rotation reminder on the left, team cards on the right. Practice sweeps animate live. **Join QR** in the header opens the code for latecomers. | Load, **Start** |
 | 3 | Game 1 Prep | 3 min | Lanes, no score. Creatures lap the course. The sync rule is not announced. | Load, **Start** |
 | 4 | Discussion: What Makes You Fast? | 2 min | Two prompts. Let the class work out the rule. | Load |
@@ -74,21 +74,25 @@ The phase picker lists the session in running order. Pick a step and press **Loa
 | 6 | Discussion: After Game 1 | 2 min | Three prompts tied to the Won et al. reading, plus Game 1 placements. | Load |
 | 7 | Game 2 Prep | 3 min | Open water, steering with real items to chase. Points show as practice and are not kept. | Load, **Start** |
 | 8 | Game 2 | 5 min | Scored harvest with a live scoreboard. Ends when the clock hits zero. | Load, **Start** |
-| 9 | Leaderboard | — | Combined standings and session highlights. | Load |
+| 9 | Leaderboard | — | Combined standings and session highlights, with a QR code to this repository on the left. | Load |
 
 The planned times add up to 25 minutes.
 
-- **The clock starts when you Load a step**, and shows on the classroom display and in Mission Control. Staging time and the 3-second countdown count, so a slow start shortens a game rather than the class running late. In the lobby it starts when the first player joins, or when you press **Start Clock**.
+- **Explaining the game.** The guide shows only what you have revealed. In panel 3, **Next** adds one thing at a time: The Game (already showing), Step 1 without the QR code, Step 2, Step 3, and finally the QR code and address. **Back** takes the last one away again, and you can click any step in the list to jump to it. Nothing appears by itself. Hiding the QR code does not stop a phone that already has the address from joining; use **Lock New Admission** for that.
+- **The clock starts when you Load a step**, and shows on the classroom display and in Mission Control. Staging time and the 3-second countdown count, so a slow start shortens a game rather than the class running late. For the how-to-play, press **Load Phase** with step 1 (Explanation) selected: the guide starts from its first card and the 4-minute clock starts, shown at the top right of the guide. If you skip that, the clock starts when you reveal the guide's second step, when the first player joins, or when you press **Start Clock**, whichever comes first.
 - **At zero, Game 1 and Game 2 end. Nothing else does.** In every other step the clock turns red, shows **Over**, and counts into the minus until you load the next step. Prep rounds keep running until you press **End Round** or load the next step.
 - The clock keeps running through **Pause**: it measures class time. A game paused when its time runs out ends when you resume it.
 - In panel 1 you can change the planned time of the step on screen or restart its clock. During a live game that is how you give it more time.
 - If you press **Start** on a game whose time is already used up, it starts but will not end by itself, and Mission Control tells you so. Press **Restart Clock** to give it a full allowance, or end it yourself.
+- **Team cards.** [`docs/print/team-cards.pdf`](docs/print/team-cards.pdf) is one Letter page of eight cut-out cards, Teams 1–8, each with the team's number, name, color, and the three join steps. Hand one to each group so they know which number to type.
 - Training has to be **started** before sweeps count or animate on the grid.
 - A player who finished their three practice sweeps but never tapped **Enter Controller** is moved into the controller automatically when you load any step after Training. Players short of three are told the class has moved on and can tap **Skip**.
 - Game 1 does not stop at the first finisher.
 - Discussion and Leaderboard have nothing to start or end. Load the next step when the room is ready. Plain **Pause** still works inside Training and rounds.
 - **Limbs come and go with players.** A phone that drops off keeps its limb for 5 seconds (shown as offline), then the limb leaves the creature and the others are renumbered. When that phone reconnects, the limb grows back in its old place with the same sweep. Someone who lost their page can simply join the team again as a new limb. Mission Control lists departed players as **Away**.
-- **Background music** is the switch in panel 3. It plays from the classroom display only: a lounge loop while joining and between rounds, a mid-tempo loop during training and prep rounds, a fast ska loop during Game 1 and Game 2, a short fanfare when the leaderboard appears, and nothing during discussions. The files are in [`public/music/`](public/music/); to change a track, replace the file of the same name and rebuild. Click once anywhere on the display's page first; browsers will not play sound until then, and the display shows a **Click to Start Music** button while it is waiting.
+- **Catch-up items in Game 2.** Once the scores differ, valuable items appear near whichever team is last: a pond star lands a few seconds' swim from them, a golden bug a little further out, and seeds anywhere. While the scores are level nothing is steered.
+- **Player emoji.** Each player gets a random emoji that no one else in the session has. It leads their nickname on their paddle, on their phone, and in the Mission Control roster, and stays with them through reconnects.
+- **Background music** is the switch in panel 3, with a **volume slider** under it that the room hears as you drag (70% to begin with). It plays from the classroom display only: a lounge loop while joining and between rounds, a mid-tempo loop during training and prep rounds, a fast ska loop during Game 1 and Game 2, a short fanfare when the leaderboard appears, and nothing during discussions. The files are in [`public/music/`](public/music/); to change a track, replace the file of the same name and rebuild. Browsers will not play sound until the display's page has been clicked or a key pressed on it, and no page can get around that. One click anywhere on the display at any time is enough, even before you switch music on. If nobody has touched it, the display shows "Click anywhere on this screen to start the music" on top of everything, the guide included.
 - **iPhone "Undo Typing" pop-up.** Shaking an iPhone can bring up Undo Typing. To prevent this, the iPhone page reloads itself once right after joining, which is expected: with nothing typed, there is nothing to undo. Players are not asked to change any setting. If the box still appears on someone's phone, they can tap Cancel, or switch it off under Settings → Accessibility → Touch → Shake to Undo.
 - The leaderboard keeps the last completed run of each game until that game is finished again or the session is cleared. Points per game are the number of teams minus your rank, plus 1; ties share a rank.
 
@@ -128,7 +132,7 @@ npm test
 npm run rehearse:load
 ```
 
-`npm test` covers recognizer rejections, seat caps, reconnect, stroke dedup, pause/resume freshness, limb-count propulsion, disconnect power, the two network presentation modes awarding the same propulsion, sync-scaled speed in Game 1, the race continuing past the first finisher, prep laps, the discussion phases, leaderboard scoring, limbs being released and growing back, item kinds and points, items in Game 2 Prep, the music switch, and the section clock (planned times, starting on load, ending the two scored games at zero and nothing else, running negative elsewhere, and surviving pause and reset). The load rehearsal measures 30 player sockets plus host and display.
+`npm test` covers recognizer rejections, seat caps, reconnect, stroke dedup, pause/resume freshness, limb-count propulsion, disconnect power, the two network presentation modes awarding the same propulsion, sync-scaled speed in Game 1, the race continuing past the first finisher, prep laps, the discussion phases, leaderboard scoring, limbs being released and growing back, item kinds and points, items in Game 2 Prep, the music switch and volume, catch-up item placement, player emoji, the stepped guide, and the section clock (planned times, starting on load, ending the two scored games at zero and nothing else, running negative elsewhere, and surviving pause and reset). The load rehearsal measures 30 player sockets plus host and display.
 
 ### Known limits
 
@@ -137,10 +141,13 @@ npm run rehearse:load
 - A team with a disconnected player cannot reach full sync for the 5 seconds their limb is held. After that the limb is released and the remaining players' strokes are each worth more, exactly as on a team that joined at that size. A phone that locks its screen for longer than 5 seconds loses its limb until it wakes.
 - The iPhone reload-after-join that reduces "Undo Typing" pop-ups is untested on a physical iPhone. A web page cannot disable Shake to Undo.
 - The background music was chosen without listening to it. The four tracks were picked from Freesound by download counts, ratings, and descriptions, then measured for tempo, whole-bar length, level, and a clean join at the loop point. Whether they suit your room is for you to judge; the sources are in [`public/music/CREDITS.txt`](public/music/CREDITS.txt).
+- The catch-up distances for items (a star 110–230 arena units from the last-placed team, a golden bug 230–420) are untuned and untried with a class.
+- Player emoji were checked for rendering in Chromium on Linux only. iPhone and Android draw their own versions, which have not been looked at.
 - Item point values (100 / 300 / 1,000), how often each kind appears, and the 5-second limb grace period are untuned defaults in [`src/shared/constants.ts`](src/shared/constants.ts).
 - Game 1's four minutes include staging and the countdown. In synthetic runs poorly coordinated teams needed about 2:30–3:00 of play to finish, so a slow start can leave some teams short of the line; they are ranked by distance. Untested with a real class.
 - The prep rounds do not end by themselves. If nobody presses **End Round** or loads the next step, they keep running with the clock in the red.
 - The planned times return to the defaults when the server restarts.
+- The sentence on The Game card linking the activity to the reading ("homuncular flexibility … remapped onto a limb your own body does not have") is draft wording awaiting confirmation, in [`src/client/views/ScreenView.tsx`](src/client/views/ScreenView.tsx).
 - The discussion prompts are draft wording awaiting confirmation, in `DISCUSSION_PROMPTS` in [`src/client/views/ScreenView.tsx`](src/client/views/ScreenView.tsx).
 - iPhone Safari does not give web pages general Taptic Engine access. Essential state is always visual; haptics and audio are optional.
 - Creatures, water, and UI chrome are procedural comic art (Canvas + CSS), not final illustrated assets.

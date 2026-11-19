@@ -134,6 +134,8 @@ export interface LimbLiveState {
   assignedPlayerId: string | null;
   /** Participant-chosen nickname; null for an unassigned limb */
   playerName: string | null;
+  /** The player's randomly assigned emoji, shown in front of the nickname; null for an unassigned limb */
+  playerEmoji: string | null;
   gestureId: GestureId | null;
   connected: boolean;
   sensorStatus: SensorStatus;
@@ -293,8 +295,15 @@ export interface SessionPublicSnapshot {
   admissionLocked: boolean;
   /** Facilitator-toggled how-to-play guide on the classroom display (presentation only) */
   guideVisible: boolean;
+  /**
+   * How much of the guide has been revealed, 1..GUIDE_STEPS.length. The facilitator steps through it
+   * while explaining: the game idea first, then the three steps one by one, and the QR code last.
+   */
+  guideStep: number;
   /** Facilitator-toggled background music on the classroom display (presentation only, off by default) */
   musicEnabled: boolean;
+  /** Background music loudness on the classroom display, 0..100 (set from Mission Control) */
+  musicVolume: number;
   minTeamSize: number;
   maxTeamSize: number;
   maxTeamNumber: number;
@@ -313,6 +322,7 @@ export interface SessionPublicSnapshot {
 export interface HostPlayerDiagnostic {
   playerId: string;
   playerName: string;
+  playerEmoji: string;
   teamNumber: number;
   limbIndex: number;
   limbLabel: string;
@@ -355,6 +365,8 @@ export interface HostPrivateSnapshot {
 export interface PlayerPrivateSeat {
   playerId: string;
   playerName: string;
+  /** Randomly assigned at join and kept for the session, like the team and the sweep */
+  playerEmoji: string;
   resumeToken: string;
   sessionId: string;
   teamNumber: number;
@@ -446,11 +458,28 @@ export type HostCommandPayload =
       commandId: string;
       type: 'set_guide_visible';
       visible: boolean;
+      /**
+       * True when the facilitator loads the Explanation step: the guide starts again from its first
+       * card and, in the lobby, the joining section's clock starts over. The plain show/hide toggle omits it.
+       */
+      fromStart?: boolean;
+    }
+  | {
+      /** Reveals the guide up to and including this step (1..GUIDE_STEPS.length); lower hides again */
+      commandId: string;
+      type: 'set_guide_step';
+      step: number;
     }
   | {
       commandId: string;
       type: 'set_music_enabled';
       enabled: boolean;
+    }
+  | {
+      commandId: string;
+      type: 'set_music_volume';
+      /** 0..100 */
+      volume: number;
     }
   | {
       commandId: string;

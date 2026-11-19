@@ -548,6 +548,7 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
     hasSucceeded: boolean;
     assigned: boolean;
     playerName: string | null;
+    playerEmoji: string | null;
   }> = [];
 
   let strokeBoost = 0;
@@ -741,6 +742,7 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       hasSucceeded: Boolean(limbState?.hasSucceededStroke),
       assigned: limbState?.assignedPlayerId !== null,
       playerName: limbState?.playerName ?? null,
+      playerEmoji: limbState?.playerEmoji ?? null,
     });
   }
 
@@ -921,11 +923,22 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       const suffix = `${isShared ? ` ${limbNumber}` : ''}${anchor.hasSucceeded ? '✓' : ''}`;
       const suffixW = suffix ? ctx.measureText(suffix).width : 0;
       const fitted = fitLabelText(ctx, anchor.playerName ?? limbNumber, maxTextW - suffixW);
+      // The player's emoji leads the nickname, drawn larger than the lettering and never truncated:
+      // it is what the room recognises a limb by from a distance
+      const emoji = anchor.playerName !== null ? anchor.playerEmoji : null;
+      const emojiPx = Math.round(fontPx * 1.3);
+      const emojiFont = `${emojiPx}px ${BODY_FONT}`;
+      let prefixW = 0;
+      if (emoji) {
+        ctx.font = emojiFont;
+        prefixW = ctx.measureText(emoji).width + Math.max(2, fontPx * 0.22);
+        ctx.font = font;
+      }
 
       const padX = isFocus ? 8 : 6.5;
       const minW = isFocus ? 34 : anchor.hasSucceeded ? 30 : NUMBER_PILL_W;
-      const w = Math.max(minW, Math.ceil(fitted.width + suffixW) + padX * 2);
-      const h = Math.round(fontPx + (isFocus ? 9.5 : 7));
+      const w = Math.max(minW, Math.ceil(prefixW + fitted.width + suffixW) + padX * 2);
+      const h = Math.round((emoji ? Math.max(fontPx, emojiPx - 1) : fontPx) + (isFocus ? 9.5 : 7));
 
       // The anchor is where a bare-number pill sits. A wider pill slides outward along the
       // limb's direction so its near edge stays put and the paddle is not covered.
@@ -944,6 +957,9 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
         isFocus,
         font,
         text: `${fitted.text}${suffix}`,
+        emoji,
+        emojiFont,
+        prefixW,
         w,
         h,
         x: anchor.x + ux * slide,
@@ -1033,8 +1049,19 @@ export function drawModularCreature(opts: DrawCreatureOptions): void {
       ctx.setLineDash([]);
 
       ctx.fillStyle = fg;
-      ctx.font = pill.font;
-      ctx.fillText(pill.text, pill.x, pill.y + 0.5);
+      if (pill.emoji) {
+        // Emoji on the left, lettering centered in what is left of the pill
+        ctx.font = pill.emojiFont;
+        ctx.textAlign = 'left';
+        ctx.fillText(pill.emoji, pill.x - pillW / 2 + (isFocus ? 7 : 5.5), pill.y + 1);
+        ctx.textAlign = 'center';
+        ctx.font = pill.font;
+        ctx.fillStyle = fg;
+        ctx.fillText(pill.text, pill.x + pill.prefixW / 2, pill.y + 0.5);
+      } else {
+        ctx.font = pill.font;
+        ctx.fillText(pill.text, pill.x, pill.y + 0.5);
+      }
     }
     ctx.restore();
   }

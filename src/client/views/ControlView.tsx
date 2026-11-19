@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import {
   GAME_DEFAULTS,
+  GUIDE_STEPS,
   MAX_TEAM_SIZE_LIMIT,
+  MUSIC_VOLUME_DEFAULT,
   MAX_TOTAL_PLAYERS,
   MIN_TEAM_SIZE_LIMIT,
   describePhase,
@@ -117,6 +119,12 @@ export const ControlView: React.FC = () => {
 
   const socketRef = useRef<Socket | null>(null);
 
+  // Music volume slider (0..100)
+  const [volumeDraft, setVolumeDraft] = useState<number>(MUSIC_VOLUME_DEFAULT);
+  const volumeEditedAtMsRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastVolumeSendMsRef = useRef(0);
+  const volumeTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
     const sock = createPondSocket();
     socketRef.current = sock;
@@ -140,6 +148,10 @@ export const ControlView: React.FC = () => {
 
     sock.on('host.snapshot', (next: HostPrivateSnapshot) => {
       setHostSnap(next);
+      // Follow the server's volume (another host tab may move it), but not while this slider is being dragged
+      if (performance.now() - volumeEditedAtMsRef.current > 700) {
+        setVolumeDraft(next.session.musicVolume);
+      }
       // Refill the planned-time fields only when the section or its saved value changes, never while typing
       const clock = next.session.sectionClock;
       if (
@@ -207,6 +219,25 @@ export const ControlView: React.FC = () => {
     });
   };
 
+  // Volume slider: the room hears the change while the thumb moves. Sends are spaced out and the
+  // last value always goes; acknowledgements stay out of the feedback banner.
+  const sendVolume = (volume: number) => {
+    const sock = socketRef.current;
+    if (!sock || !sock.connected) return;
+    lastVolumeSendMsRef.current = performance.now();
+    sock.emit('host.command', { commandId: makeCommandId('hvol'), type: 'set_music_volume', volume }, () => undefined);
+  };
+  const handleVolumeChange = (volume: number) => {
+    setVolumeDraft(volume);
+    volumeEditedAtMsRef.current = performance.now();
+    if (volumeTimerRef.current !== null) window.clearTimeout(volumeTimerRef.current);
+    const wait = Math.max(0, 90 - (performance.now() - lastVolumeSendMsRef.current));
+    volumeTimerRef.current = window.setTimeout(() => {
+      volumeTimerRef.current = null;
+      sendVolume(volume);
+    }, wait);
+  };
+
   if (!authenticated) {
     return (
       <main className="play-shell" style={{ maxWidth: 440, justifyContent: 'center' }}>
@@ -254,7 +285,8 @@ export const ControlView: React.FC = () => {
     if (!step) return;
     const { load } = step;
     if (load === null) {
-      sendCommand((commandId) => ({ commandId, type: 'set_guide_visible', visible: true }));
+      // Loading the Explanation starts it from the first card and starts its clock
+      sendCommand((commandId) => ({ commandId, type: 'set_guide_visible', visible: true, fromStart: true }));
     } else {
       sendCommand((commandId) => ({ commandId, type: 'load_phase', ...load }));
     }
@@ -268,6 +300,9 @@ export const ControlView: React.FC = () => {
     (session.runStatus === 'running' || session.runStatus === 'countdown');
   const phaseLabel = describePhase(session.phase, session.round.scoringEnabled);
   const sectionClock = session.sectionClock;
+  const guideStep = Math.max(1, Math.min(GUIDE_STEPS.length, session.guideStep));
+  const sendGuideStep = (step: number) =>
+    sendCommand((commandId) => ({ commandId, type: 'set_guide_step', step }));
   const isScoredRound = isGamePhase && session.round.scoringEnabled;
   const sectionOver = sectionClock.section !== null && sectionClock.remainingMs <= 0;
 
@@ -625,9 +660,11 @@ export const ControlView: React.FC = () => {
                 How-to-Play Guide on Classroom Display
               </div>
               <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
-                Covers the classroom display with joining steps, the motion-permission reminder, the
-                six sweeps, and the game idea. A fresh session opens on it; it hides itself when you
-                load, start, or resume a phase.
+                Covers the classroom display. A fresh session opens on its first card, The Game. Reveal
+                the rest as you explain: steps 1 to 3, then the QR code once the class is ready to
+                join. Loading step 1 (Explanation) in panel 1 starts it from the first card and starts
+                the clock, which shows at the top right of the guide. It hides itself when you load,
+                start, or resume a phase.
               </p>
               <div className="btn-row" style={{ alignItems: 'center' }}>
                 <button
@@ -652,6 +689,48 @@ export const ControlView: React.FC = () => {
                   {session.guideVisible ? 'Guide showing' : 'Guide hidden'}
                 </span>
               </div>
+              <div className="guide-stepper">
+                <div className="guide-stepper-now">
+                  On screen{session.guideVisible ? '' : ' when shown'}: step {guideStep} of {GUIDE_STEPS.length},{' '}
+                  <strong>{GUIDE_STEPS[guideStep - 1].label}</strong>
+                </div>
+                <div className="btn-row" style={{ alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn-subtle btn-xs"
+                    disabled={guideStep <= 1}
+                    onClick={() => sendGuideStep(guideStep - 1)}
+                  >
+                    ◀ Back
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary btn-xs"
+                    disabled={guideStep >= GUIDE_STEPS.length}
+                    onClick={() => sendGuideStep(guideStep + 1)}
+                  >
+                    {guideStep >= GUIDE_STEPS.length
+                      ? 'Everything is showing'
+                      : `Next: ${GUIDE_STEPS[guideStep].label} ▶`}
+                  </button>
+                </div>
+                <ol className="guide-stepper-list">
+                  {GUIDE_STEPS.map((gs, i) => (
+                    <li key={gs.id}>
+                      <button
+                        type="button"
+                        className={`guide-stepper-item ${i + 1 <= guideStep ? 'is-shown' : ''} ${
+                          i + 1 === guideStep ? 'is-current' : ''
+                        }`}
+                        aria-current={i + 1 === guideStep ? 'step' : undefined}
+                        onClick={() => sendGuideStep(i + 1)}
+                      >
+                        <span aria-hidden="true">{i + 1 <= guideStep ? '✓' : i + 1}</span> {gs.label}
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             </div>
 
             <div style={{ borderTop: '2px dashed var(--border-strong)', paddingTop: '0.7rem' }}>
@@ -659,8 +738,8 @@ export const ControlView: React.FC = () => {
                 Background Music on Classroom Display
               </div>
               <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: 'var(--ink-secondary)' }}>
-                Party-style music from the classroom display's speakers: a relaxed tune between
-                rounds, a faster one during countdowns and live rounds, silence during discussions.
+                Party-style music from the classroom display's speakers: a lounge loop between
+                rounds, livelier loops during training, prep and the games, silence during discussions.
                 Phones stay quiet. The display's browser needs one click on its page before it is
                 allowed to play sound; it shows a button when it is waiting for that.
               </p>
@@ -682,6 +761,19 @@ export const ControlView: React.FC = () => {
                 <span className={`pill ${session.musicEnabled ? 'pill-running' : ''}`}>
                   {session.musicEnabled ? 'Music on' : 'Music off'}
                 </span>
+              </div>
+              <div className="music-volume-row">
+                <label htmlFor="music-volume-slider">Volume</label>
+                <input
+                  id="music-volume-slider"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={volumeDraft}
+                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                />
+                <output htmlFor="music-volume-slider">{volumeDraft}%</output>
               </div>
             </div>
 
@@ -956,7 +1048,7 @@ export const ControlView: React.FC = () => {
                         {teamPlayers.map((p) => (
                           <tr key={p.playerId} style={p.seated ? undefined : { opacity: 0.55 }}>
                             <td>
-                              <strong>{p.playerName}</strong> · {p.limbLabel}
+                              <span aria-hidden="true">{p.playerEmoji}</span> <strong>{p.playerName}</strong> · {p.limbLabel}
                               {p.held ? ' (Held)' : ''}
                             </td>
                             <td>{p.gestureInstruction}</td>

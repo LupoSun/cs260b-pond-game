@@ -1172,6 +1172,8 @@ export const PlayView: React.FC = () => {
   const myLimb = teamState?.limbs.find((l) => l.assignedPlayerId === seat.playerId) ?? null;
   const myLimbIndex = myLimb ? myLimb.limbIndex : seat.limbIndex;
   const myLimbLabel = myLimb ? myLimb.limbLabel : seat.limbLabel;
+  // The emoji is this player's badge on every screen; it never changes during the session
+  const myEmoji = seat.playerEmoji ?? myLimb?.playerEmoji ?? '';
   const sweepStage: SweepStage = !held ? 'press' : statusKind === 'accepted' ? 'release' : 'move';
 
   // Onboarding Steps: Sensors -> Calibrate -> Practice
@@ -1182,7 +1184,7 @@ export const PlayView: React.FC = () => {
           <div className="onboard-identity">
             <span className="team-swatch-dot" style={{ backgroundColor: seat.colorHex }} />
             <span className="play-topbar-title">
-              {seat.playerName} · Team {seat.teamNumber} · {myLimbLabel}
+              {myEmoji} {seat.playerName} · Team {seat.teamNumber} · {myLimbLabel}
             </span>
           </div>
           <span className={`pill ${connected ? 'pill-running' : 'pill-danger'}`}>
@@ -1194,7 +1196,7 @@ export const PlayView: React.FC = () => {
           <section className="onboard-panel">
             <SetupStepTrack current={1} />
             <h1>
-              You're In, {seat.playerName}! Team {seat.teamNumber} · {myLimbLabel}
+              You're In, {myEmoji} {seat.playerName}! Team {seat.teamNumber} · {myLimbLabel}
             </h1>
             <p>
               Your assigned movement is <strong>{GESTURE_SPECS[seat.assignment.gestureId].instruction}</strong>.
@@ -1457,7 +1459,7 @@ export const PlayView: React.FC = () => {
               Team {seat.teamNumber} · {myLimbLabel}
             </div>
             <div className="controller-identity-sub">
-              {seat.playerName} ·{' '}
+              {myEmoji} {seat.playerName} ·{' '}
               {inputMethod === 'physical_sweep'
                 ? 'Physical Sweep'
                 : inputMethod === 'tilt'

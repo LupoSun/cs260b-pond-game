@@ -9,7 +9,10 @@ import type {
 } from '../../shared/types.js';
 import {
   GESTURE_ASSIGNMENT_ORDER,
+  GUIDE_STEPS,
+  MUSIC_VOLUME_DEFAULT,
   POND_ITEMS,
+  PROJECT_REPO_URL,
   POND_ITEM_ORDER,
   SECTION_LABELS,
   formatSectionClock,
@@ -179,6 +182,8 @@ export const ScreenView: React.FC = () => {
   // Latest points gained per team, for the "+300" chip that pops beside its score
   const [scoreGains, setScoreGains] = useState<Record<number, { points: number; key: string }>>({});
   const musicRef = useRef<PartyMusic | null>(null);
+  /** When a click last had to start held-back music; that click must not also toggle Sound off */
+  const gestureStartedMusicAtMsRef = useRef(Number.NEGATIVE_INFINITY);
 
   const arenaCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapRef = useRef<SessionPublicSnapshot | null>(null);
@@ -343,10 +348,20 @@ export const ScreenView: React.FC = () => {
     }
     return 'lobby';
   })();
+  const musicVolume = snapshot?.musicVolume ?? MUSIC_VOLUME_DEFAULT;
+  /** The display's one music player, created on first need and wired to report when audio is held back. */
+  const getMusic = (): PartyMusic => {
+    if (!musicRef.current) {
+      const music = new PartyMusic();
+      music.onBlockedChange = (blocked) => setMusicBlocked(blocked);
+      musicRef.current = music;
+    }
+    return musicRef.current;
+  };
   useEffect(() => {
-    if (musicMood !== 'silent' && !musicRef.current) musicRef.current = new PartyMusic();
-    const music = musicRef.current;
-    if (!music) return;
+    if (musicMood === 'silent' && !musicRef.current) return;
+    const music = getMusic();
+    music.setVolume(musicVolume);
     music.setMood(musicMood);
     // Development builds only: lets an automated check read the output level
     if (snapRef.current?.devSimAvailable) {
@@ -356,11 +371,17 @@ export const ScreenView: React.FC = () => {
     const check = window.setTimeout(() => setMusicBlocked(music.needsUnlock()), 500);
     return () => window.clearTimeout(check);
   }, [musicMood]);
+  // The facilitator's volume slider (Mission Control) follows live, without restarting anything
   useEffect(() => {
+    musicRef.current?.setVolume(musicVolume);
+  }, [musicVolume]);
+  useEffect(() => {
+    // Every click or key press on the display opens the audio device, even before music is switched
+    // on: a browser only allows that inside a user gesture, so the earliest one is used.
     const unlock = () => {
-      const music = musicRef.current;
-      if (!music) return;
-      music.unlock();
+      const music = getMusic();
+      if (music.needsUnlock()) gestureStartedMusicAtMsRef.current = performance.now();
+      music.prime();
       window.setTimeout(() => setMusicBlocked(music.needsUnlock()), 300);
     };
     window.addEventListener('pointerdown', unlock);
@@ -427,6 +448,13 @@ export const ScreenView: React.FC = () => {
               ? `Discussion · ${discussion?.kicker ?? ''}`
               : 'Leaderboard · Session Results';
 
+  // Guide reveal: a panel is hidden until the facilitator reaches its step, and the newest one is marked
+  const guideStep = Math.max(1, Math.min(GUIDE_STEPS.length, snapshot.guideStep ?? GUIDE_STEPS.length));
+  const guidePanelClass = (name: string, revealedAt: number, newestAt: number): string =>
+    `guide-panel ${name} ${guideStep >= revealedAt ? 'is-revealed' : 'is-waiting'} ${
+      guideStep === newestAt && guideStep > 1 ? 'is-newest' : ''
+    }`;
+
   const lobbyCountText =
     snapshot.phase === 'lobby'
       ? `${snapshot.teams.reduce((s, t) => s + t.joinedCount, 0)} Seated · ${snapshot.teams.length} ${
@@ -438,6 +466,22 @@ export const ScreenView: React.FC = () => {
   // The server ends Game 1 and Game 2 at zero; every other section is only paced by it.
   const sectionClock = snapshot.sectionClock;
   const sectionOver = sectionClock.section !== null && sectionClock.remainingMs <= 0;
+  // One badge, used in the header and again on top of the guide, which covers the header
+  const sectionClockBadge =
+    sectionClock.section !== null ? (
+      <div
+        className={`screen-clock section-clock ${sectionOver ? 'is-over' : ''} ${
+          sectionClock.running ? '' : 'is-waiting'
+        }`}
+        role="timer"
+        aria-label={`${SECTION_LABELS[sectionClock.section]}: ${
+          sectionOver ? 'over time by' : 'time left'
+        } ${formatSectionClock(sectionClock.remainingMs).replace('-', '')}`}
+      >
+        {sectionOver && <span className="section-clock-flag">Over</span>}
+        {formatSectionClock(sectionClock.remainingMs)}
+      </div>
+    ) : null;
 
   const countdownDigit = Math.max(1, Math.ceil(snapshot.round.countdownRemainingMs / 1000));
   const gridShape = computeDynamicGridShape(snapshot.teams.length);
@@ -526,20 +570,7 @@ export const ScreenView: React.FC = () => {
         <div className="screen-title-group">
           {lobbyCountText !== null && <div className="screen-clock">{lobbyCountText}</div>}
 
-          {sectionClock.section !== null && (
-            <div
-              className={`screen-clock section-clock ${sectionOver ? 'is-over' : ''} ${
-                sectionClock.running ? '' : 'is-waiting'
-              }`}
-              role="timer"
-              aria-label={`${SECTION_LABELS[sectionClock.section]}: ${
-                sectionOver ? 'over time by' : 'time left'
-              } ${formatSectionClock(sectionClock.remainingMs).replace('-', '')}`}
-            >
-              {sectionOver && <span className="section-clock-flag">Over</span>}
-              {formatSectionClock(sectionClock.remainingMs)}
-            </div>
-          )}
+          {sectionClockBadge}
 
           {snapshot.phase === 'training' && snapshot.teams.length > 0 && !snapshot.guideVisible && (
             <button
@@ -569,6 +600,8 @@ export const ScreenView: React.FC = () => {
             type="button"
             className="btn-subtle btn-xs"
             onClick={() => {
+              // If this very click is what let the browser start the music, it has done its job
+              if (!muted && performance.now() - gestureStartedMusicAtMsRef.current < 800) return;
               const next = !muted;
               setMuted(next);
               feedbackRef.current.setMuted(next);
@@ -577,12 +610,6 @@ export const ScreenView: React.FC = () => {
           >
             {muted ? 'Sound Off' : 'Sound On'}
           </button>
-
-          {musicBlocked && !muted && (
-            <button type="button" className="btn-primary btn-xs music-unlock">
-              Click to Start Music
-            </button>
-          )}
 
           {!connected && <span className="pill pill-danger">Reconnecting</span>}
         </div>
@@ -689,6 +716,7 @@ export const ScreenView: React.FC = () => {
                           key={l.limbIndex}
                           className={`limb-chip ${l.calibrated ? 'is-calibrated' : ''}`}
                         >
+                          {l.playerEmoji && <span className="limb-chip-emoji">{l.playerEmoji}</span>}
                           <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
                           {l.calibrated ? 'Cal ✓' : l.connected ? 'Joined' : 'Offline'}
                         </div>
@@ -779,6 +807,7 @@ export const ScreenView: React.FC = () => {
                                   : ''
                             }`}
                           >
+                            {l.playerEmoji && <span className="limb-chip-emoji">{l.playerEmoji}</span>}
                             <span className="limb-chip-name">{l.playerName ?? `L${l.limbIndex + 1}`}</span>{' '}
                             {l.hasSucceededStroke
                               ? '✓'
@@ -1052,6 +1081,18 @@ export const ScreenView: React.FC = () => {
       {/* 5. LEADERBOARD: frozen results of the last completed run of each scored game */}
       {snapshot.phase === 'leaderboard' && (
         <section className="leaderboard-stage">
+          {/* Where the class can find the code: this project's public repository */}
+          <aside className="repo-card" aria-label="Source code">
+            <h2 className="repo-card-title">Open Source!</h2>
+            <div className="qr-image-frame repo-card-qr">
+              <img
+                src={`/api/qr?url=${encodeURIComponent(PROJECT_REPO_URL)}`}
+                alt={`QR code for the source code at ${PROJECT_REPO_URL}`}
+              />
+            </div>
+            <p className="repo-card-lead">Scan for the code behind this game</p>
+            <p className="repo-card-url">{PROJECT_REPO_URL.replace(/^https?:\/\//, '')}</p>
+          </aside>
           <div className="leaderboard-panel">
             <h2 className="comic-word">Final Standings</h2>
 
@@ -1160,26 +1201,43 @@ export const ScreenView: React.FC = () => {
       {/* 6. HOW-TO-PLAY GUIDE: shown by default on a fresh session, toggled from Mission Control; read-only here */}
       {snapshot.guideVisible && (
         <section className="guide-stage" aria-label="How to play">
-          <div className="guide-grid">
-            <article className="guide-panel guide-join">
+          {/* The guide covers the header, so it carries its own title and the section clock, top right */}
+          <div className="guide-bar">
+            <h1 className="guide-bar-title">How to Play</h1>
+            {sectionClockBadge}
+          </div>
+          {/* Revealed one step at a time from Mission Control: the game idea, steps 1 to 3, then the QR code */}
+          <div className={`guide-grid ${guideStep <= 1 ? 'guide-grid-intro' : ''}`}>
+            <article className={guidePanelClass('guide-join', 2, guideStep >= 5 ? 5 : 2)} aria-hidden={guideStep < 2}>
               <h2 className="guide-heading">
                 <span className="guide-num">1</span> Scan &amp; Join
               </h2>
-              <div className="qr-image-frame">
-                <img src={qrSrc} alt={`Join QR code for ${playUrl}`} />
-              </div>
-              <div className="join-url-pill">{playUrl}</div>
+              {guideStep >= 5 ? (
+                <>
+                  <div className="qr-image-frame guide-qr-live">
+                    <img src={qrSrc} alt={`Join QR code for ${playUrl}`} />
+                  </div>
+                  <div className="join-url-pill">{playUrl}</div>
+                </>
+              ) : (
+                <div className="qr-image-frame guide-qr-waiting">
+                  <span className="guide-qr-waiting-mark" aria-hidden="true">
+                    ?
+                  </span>
+                  <span>The QR code appears here when it is time to join.</span>
+                </div>
+              )}
               {snapshot.admissionLocked ? (
                 <span className="pill pill-paused">Admission Locked (Rejoining Open)</span>
               ) : (
                 <p>
-                  Type a <strong>nickname</strong> and the <strong>team number</strong> your
-                  facilitator gave you.
+                  Scan the code, then type a <strong>nickname</strong> and the{' '}
+                  <strong>team number</strong> on your team's card.
                 </p>
               )}
             </article>
 
-            <article className="guide-panel guide-motion">
+            <article className={guidePanelClass('guide-motion', 3, 3)} aria-hidden={guideStep < 3}>
               <h2 className="guide-heading">
                 <span className="guide-num">2</span> Allow Motion
               </h2>
@@ -1189,17 +1247,13 @@ export const ScreenView: React.FC = () => {
                   <strong>Allow</strong>.
                 </li>
                 <li>
-                  iPhone: open the page in <strong>Safari</strong>. Android: use{' '}
-                  <strong>Chrome</strong>.
-                </li>
-                <li>
                   <strong>Lock screen rotation</strong>, hold the phone upright facing you, then
                   keep still to calibrate.
                 </li>
               </ul>
             </article>
 
-            <article className="guide-panel guide-game">
+            <article className={guidePanelClass('guide-game', 1, 1)}>
               <h2 className="guide-heading">The Game</h2>
               <ul>
                 <li>
@@ -1207,11 +1261,14 @@ export const ScreenView: React.FC = () => {
                   <strong>one limb</strong>.
                 </li>
                 <li>You keep the same team, limb, and sweep the whole time.</li>
-                <li>Practice first, then race across the pond and find out what makes you fast!</li>
+                <li>
+                  It is <strong>homuncular flexibility</strong> in action: a small sweep of your
+                  phone is <strong>remapped</strong> onto a limb your own body does not have.
+                </li>
               </ul>
             </article>
 
-            <article className="guide-panel guide-sweeps">
+            <article className={guidePanelClass('guide-sweeps', 4, 4)} aria-hidden={guideStep < 4}>
               <h2 className="guide-heading">
                 <span className="guide-num">3</span> Learn Your Sweep
               </h2>
@@ -1225,6 +1282,16 @@ export const ScreenView: React.FC = () => {
             </article>
           </div>
         </section>
+      )}
+
+      {/* The browser holds music back until this page is clicked once. Shown above everything, the guide included. */}
+      {snapshot.musicEnabled && musicBlocked && !muted && (
+        <button type="button" className="music-unlock-banner">
+          <span className="music-unlock-icon" aria-hidden="true">
+            ♪
+          </span>
+          Click anywhere on this screen to start the music
+        </button>
       )}
     </main>
   );

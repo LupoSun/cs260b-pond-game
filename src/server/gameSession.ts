@@ -13,6 +13,9 @@ import {
   getLimbLayout,
   getSyncMultiplier,
   getTeamIdentityPreset,
+  GUIDE_STEPS,
+  MUSIC_VOLUME_DEFAULT,
+  PLAYER_EMOJI_POOL,
   SECTION_BUDGET_DEFAULTS_SEC,
   SECTION_LABELS,
   SECTION_ORDER,
@@ -69,6 +72,8 @@ interface PlayerRecord {
   playerId: string;
   /** Participant-chosen nickname; fixed for the session like team and limb */
   playerName: string;
+  /** Randomly assigned identification emoji; fixed for the session and unique while the pool lasts */
+  playerEmoji: string;
   resumeToken: string;
   teamNumber: number;
   limbIndex: number;
@@ -191,8 +196,12 @@ export class ClassroomGameSession {
   private admissionLocked = false;
   /** A fresh session opens on the how-to-play guide; loading or starting any phase hides it */
   private guideVisible = true;
+  /** How much of the guide is revealed (1..GUIDE_STEPS.length); a fresh session starts on the first card */
+  private guideStep = 1;
   /** Background music on the classroom display; a facilitator preference that survives a session clear */
   private musicEnabled = false;
+  /** 0..100; a facilitator setting like the switch, kept across a session clear */
+  private musicVolume: number = MUSIC_VOLUME_DEFAULT;
   private nextJoinOrder = 1;
   private minTeamSize: number = GAME_DEFAULTS.defaultMinTeamSize;
   private maxTeamSize: number = GAME_DEFAULTS.defaultMaxTeamSize;
@@ -491,6 +500,7 @@ export class ClassroomGameSession {
     const gestureSpec = GESTURE_SPECS[gestureId];
 
     const playerId = makeId('plr');
+    const playerEmoji = this.pickEmojiForNewPlayer(team);
     const resumeToken = crypto.randomBytes(18).toString('hex');
     const assignment: MotionAssignment = {
       assignmentId: `asg_t${requestedTeamNumber}_l${freeLimbIndex + 1}`,
@@ -503,6 +513,7 @@ export class ClassroomGameSession {
     const record: PlayerRecord = {
       playerId,
       playerName,
+      playerEmoji,
       resumeToken,
       teamNumber: requestedTeamNumber,
       limbIndex: freeLimbIndex,
@@ -662,6 +673,26 @@ export class ClassroomGameSession {
    * teammates whose limb was released are avoided while any other is free, so a returning player
    * usually still has a sweep nobody else on the creature shares.
    */
+  /**
+   * A random emoji nobody in the session has yet (away players keep theirs). Only if the whole pool
+   * is spoken for does it reuse one, and then never one already on this team's creature.
+   */
+  private pickEmojiForNewPlayer(team: TeamRecord): string {
+    const taken = new Set<string>();
+    for (const p of this.players.values()) taken.add(p.playerEmoji);
+    let candidates = PLAYER_EMOJI_POOL.filter((e) => !taken.has(e));
+    if (candidates.length === 0) {
+      const onTeam = new Set<string>();
+      for (const pid of team.seatPlayerIds) {
+        const p = pid ? this.players.get(pid) : undefined;
+        if (p) onTeam.add(p.playerEmoji);
+      }
+      candidates = PLAYER_EMOJI_POOL.filter((e) => !onTeam.has(e));
+    }
+    if (candidates.length === 0) candidates = [...PLAYER_EMOJI_POOL];
+    return candidates[crypto.randomInt(candidates.length)];
+  }
+
   private pickGestureForNewLimb(team: TeamRecord): GestureId {
     const seated = new Set<GestureId>();
     const away = new Set<GestureId>();
@@ -1021,7 +1052,7 @@ export class ClassroomGameSession {
     }
 
     team.latestAcknowledgment = {
-      text: `${player.playerName} · ${player.limbLabel} · stroke recognized`,
+      text: `${player.playerEmoji} ${player.playerName} · ${player.limbLabel} · stroke recognized`,
       limbIndex: player.limbIndex,
       strokeId: payload.strokeId,
       atServerMs: nowMs,
@@ -1314,11 +1345,12 @@ export class ClassroomGameSession {
           if (item.respawnRemainingMs !== null) {
             item.respawnRemainingMs -= dtMs;
             if (item.respawnRemainingMs <= 0) {
-              const pos = this.findFairItemPosition();
-              item.x = pos.x;
-              item.y = pos.y;
+              // Kind first: where an item appears depends on what it is worth (catch-up rule)
               item.variant = this.pickItemVariant(this.items.filter((it) => it !== item));
               item.points = POND_ITEMS[item.variant].points;
+              const pos = this.findFairItemPosition(item.variant);
+              item.x = pos.x;
+              item.y = pos.y;
               item.available = true;
               item.collectedByTeam = null;
               item.collectedAtMs = null;
@@ -1531,6 +1563,18 @@ export class ClassroomGameSession {
         return this.okAck('MUSIC_UPDATED', `Background music ${cmd.enabled ? 'on' : 'off'}.`);
       }
 
+      case 'set_music_volume': {
+        const volume = Math.round(Number(cmd.volume));
+        if (!Number.isFinite(volume) || volume < 0 || volume > 100) {
+          return this.failAck('INVALID_MUSIC_VOLUME', 'Music volume must be between 0 and 100.');
+        }
+        if (volume !== this.musicVolume) {
+          this.musicVolume = volume;
+          this.bumpRevision();
+        }
+        return this.okAck('MUSIC_VOLUME_UPDATED', `Music volume ${volume}%.`);
+      }
+
       case 'set_team_size_bounds': {
         if (this.isActiveScoredRoundRunning()) {
           return this.failAck(
@@ -1585,6 +1629,22 @@ export class ClassroomGameSession {
         );
       }
 
+      case 'set_guide_step': {
+        const step = Math.round(Number(cmd.step));
+        if (!Number.isFinite(step) || step < 1 || step > GUIDE_STEPS.length) {
+          return this.failAck('INVALID_GUIDE_STEP', `Guide step must be between 1 and ${GUIDE_STEPS.length}.`);
+        }
+        this.guideStep = step;
+        // Moving past the first card means the explanation has begun, so the joining clock starts
+        // even though nobody has scanned the code yet
+        if (step > 1 && this.phase === 'lobby' && this.sectionClockStartedAtMs === null) {
+          this.sectionClockStartedAtMs = this.nowFn();
+        }
+        this.bumpRevision();
+        this.logEvent('info', `Guide revealed up to "${GUIDE_STEPS[step - 1].label}".`);
+        return this.okAck('GUIDE_STEP_UPDATED', `Guide now shows up to: ${GUIDE_STEPS[step - 1].label}.`);
+      }
+
       case 'set_guide_visible': {
         const visible = Boolean(cmd.visible);
         if (visible && (this.runStatus === 'running' || this.runStatus === 'countdown')) {
@@ -1594,6 +1654,11 @@ export class ClassroomGameSession {
           );
         }
         this.guideVisible = visible;
+        if (visible && cmd.fromStart === true) {
+          // Loading the Explanation step is the start of that section, like loading any phase
+          this.guideStep = 1;
+          if (this.phase === 'lobby') this.sectionClockStartedAtMs = this.nowFn();
+        }
         this.bumpRevision();
         this.logEvent('info', `How-to-play guide ${visible ? 'shown on' : 'hidden from'} the classroom display.`);
         return this.okAck(
@@ -1894,6 +1959,7 @@ export class ClassroomGameSession {
         this.discussionTopic = null;
         this.admissionLocked = false;
         this.guideVisible = true;
+        this.guideStep = 1;
         this.gameResults = { straight: null, freewater: null };
         this.leaderboardStandings = [];
         this.activeElapsedMs = 0;
@@ -1991,8 +2057,8 @@ export class ClassroomGameSession {
     this.items = [];
     this.itemCounter = 0;
     for (let i = 0; i < GAME_DEFAULTS.targetActiveItems; i++) {
-      const pos = this.findFairItemPosition(this.items);
       const variant = this.pickItemVariant(this.items);
+      const pos = this.findFairItemPosition(variant, this.items);
       this.itemCounter += 1;
       this.items.push({
         itemId: `itm_${this.roundId}_${this.itemCounter}`,
@@ -2028,36 +2094,81 @@ export class ClassroomGameSession {
     return 'glow_seed';
   }
 
-  private findFairItemPosition(existingItems: InternalItemRecord[] = this.items): { x: number; y: number } {
+  /**
+   * The team the catch-up rule favours: the lowest score among the creatures in the water. When
+   * every team has the same score nobody is behind, so there is none; several teams tied for last
+   * are chosen between by the round's seeded generator.
+   */
+  private pickTrailingTeam(): TeamRecord | null {
+    const teams = this.getParticipatingTeams().filter((t) => t.seatPlayerIds.length > 0);
+    if (teams.length < 2) return null;
+    let low = Infinity;
+    let high = -Infinity;
+    for (const t of teams) {
+      if (t.sim.score < low) low = t.sim.score;
+      if (t.sim.score > high) high = t.sim.score;
+    }
+    if (low === high) return null;
+    const last = teams.filter((t) => t.sim.score === low);
+    return last[Math.floor(this.rng() * last.length) % last.length];
+  }
+
+  /**
+   * Where a new item goes. Never on top of a creature or another item. Valuable kinds are placed
+   * near the lowest-scoring team, the more valuable the nearer (POND_ITEMS.nearTrailingTeam), and
+   * nearer to that team than to any other; seeds, and everything while the scores are level, go
+   * anywhere in the pond.
+   */
+  private findFairItemPosition(
+    variant: PondItemVariant,
+    existingItems: InternalItemRecord[] = this.items,
+  ): { x: number; y: number } {
     const padX = 110;
     const padY = 95;
     const minCreatureDist =
       GAME_DEFAULTS.creatureBodyRadius + GAME_DEFAULTS.itemCollisionRadius + 48;
     const minItemDist = GAME_DEFAULTS.itemCollisionRadius * 3.4;
+    const teams = this.getParticipatingTeams();
+
+    const isFree = (x: number, y: number): boolean => {
+      if (x < padX || x > GAME_DEFAULTS.arenaWidth - padX) return false;
+      if (y < padY || y > GAME_DEFAULTS.arenaHeight - padY) return false;
+      for (const team of teams) {
+        if (Math.hypot(team.sim.x - x, team.sim.y - y) < minCreatureDist) return false;
+      }
+      for (const it of existingItems) {
+        if (it.available && Math.hypot(it.x - x, it.y - y) < minItemDist) return false;
+      }
+      return true;
+    };
+
+    const ring = POND_ITEMS[variant].nearTrailingTeam;
+    const trailing = ring ? this.pickTrailingTeam() : null;
+    if (ring && trailing) {
+      // First insist the spot is nearer to the trailing team than to anyone else; if the pond is
+      // too crowded for that (creatures bunched in a corner), settle for inside the ring.
+      for (const mustBeNearest of [true, false]) {
+        for (let attempt = 0; attempt < 60; attempt++) {
+          const angle = this.rng() * Math.PI * 2;
+          const dist = ring.minDist + this.rng() * (ring.maxDist - ring.minDist);
+          const x = trailing.sim.x + Math.cos(angle) * dist;
+          const y = trailing.sim.y + Math.sin(angle) * dist;
+          if (!isFree(x, y)) continue;
+          if (
+            mustBeNearest &&
+            teams.some((t) => t !== trailing && Math.hypot(t.sim.x - x, t.sim.y - y) < dist)
+          ) {
+            continue;
+          }
+          return { x: Math.round(x), y: Math.round(y) };
+        }
+      }
+    }
 
     for (let attempt = 0; attempt < 80; attempt++) {
       const x = padX + this.rng() * (GAME_DEFAULTS.arenaWidth - padX * 2);
       const y = padY + this.rng() * (GAME_DEFAULTS.arenaHeight - padY * 2);
-
-      let collidesCreature = false;
-      for (const team of this.getParticipatingTeams()) {
-        if (Math.hypot(team.sim.x - x, team.sim.y - y) < minCreatureDist) {
-          collidesCreature = true;
-          break;
-        }
-      }
-      if (collidesCreature) continue;
-
-      let collidesItem = false;
-      for (const it of existingItems) {
-        if (it.available && Math.hypot(it.x - x, it.y - y) < minItemDist) {
-          collidesItem = true;
-          break;
-        }
-      }
-      if (!collidesItem) {
-        return { x: Math.round(x), y: Math.round(y) };
-      }
+      if (isFree(x, y)) return { x: Math.round(x), y: Math.round(y) };
     }
 
     return {
@@ -2095,6 +2206,7 @@ export class ClassroomGameSession {
           bank: slot.bank,
           assignedPlayerId: p ? p.playerId : null,
           playerName: p ? p.playerName : null,
+          playerEmoji: p ? p.playerEmoji : null,
           gestureId: p ? p.assignment.gestureId : null,
           connected: p ? p.connected : false,
           sensorStatus: p ? p.sensorStatus : ('unknown' as SensorStatus),
@@ -2165,7 +2277,9 @@ export class ClassroomGameSession {
       networkModeVersion: this.networkModeVersion,
       admissionLocked: this.admissionLocked,
       guideVisible: this.guideVisible,
+      guideStep: this.guideStep,
       musicEnabled: this.musicEnabled,
+      musicVolume: this.musicVolume,
       minTeamSize: this.minTeamSize,
       maxTeamSize: this.maxTeamSize,
       maxTeamNumber: MAX_TEAM_NUMBER,
@@ -2197,6 +2311,7 @@ export class ClassroomGameSession {
       .map((p) => ({
         playerId: p.playerId,
         playerName: p.playerName,
+        playerEmoji: p.playerEmoji,
         teamNumber: p.teamNumber,
         limbIndex: p.limbIndex,
         limbLabel: p.seated ? p.limbLabel : 'Limb released',
@@ -2319,6 +2434,7 @@ export class ClassroomGameSession {
     return {
       playerId: p.playerId,
       playerName: p.playerName,
+      playerEmoji: p.playerEmoji,
       resumeToken: p.resumeToken,
       sessionId: this.sessionId,
       teamNumber: p.teamNumber,

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ClassroomGameSession } from '../src/server/gameSession.js';
 import {
   GAME_DEFAULTS,
+  GUIDE_STEPS,
+  MUSIC_VOLUME_DEFAULT,
+  PLAYER_EMOJI_POOL,
   POND_ITEMS,
   SECTION_BUDGET_DEFAULTS_SEC,
   SECTION_ORDER,
@@ -1621,5 +1624,369 @@ describe('Revision 0.5 — session plan and the section clock', () => {
     expect(snap.sectionClock).toMatchObject({ section: 'joining', running: false, remainingMs: 240000 });
     expect(snap.sectionBudgetsSec.game2).toBe(360);
     expect(snap.sectionBudgetsSec.training).toBe(90);
+  });
+});
+
+describe('Revision 0.6 — catch-up item placement, music volume, and player emoji', () => {
+  type Internals = {
+    teams: Map<number, { sim: { x: number; y: number; score: number } }>;
+    findFairItemPosition: (variant: 'glow_seed' | 'golden_bug' | 'pond_star') => { x: number; y: number };
+  };
+
+  /** A running Game 2 with `teamCount` teams of two, and direct access to scores and item placement. */
+  function runningHarvest(teamCount: number) {
+    const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    for (let t = 1; t <= teamCount; t++) {
+      joinAndCalibrate(session, `t${t}a`, t);
+      joinAndCalibrate(session, `t${t}b`, t);
+    }
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'freewater', scoringEnabled: true, seed: 77 });
+    session.executeHostCommand({ commandId: 's', type: 'start_phase', overrideWarnings: true });
+    session.stepSimulation(3000);
+    expect(session.getPublicSnapshot().runStatus).toBe('running');
+    const inner = session as unknown as Internals;
+    const place = (variant: 'glow_seed' | 'golden_bug' | 'pond_star', n: number) =>
+      Array.from({ length: n }, () => inner.findFairItemPosition.call(session, variant));
+    const distTo = (team: number, pos: { x: number; y: number }) => {
+      const sim = inner.teams.get(team)!.sim;
+      return Math.hypot(sim.x - pos.x, sim.y - pos.y);
+    };
+    return { session, inner, place, distTo };
+  }
+
+  it('puts a star close to the lowest-scoring team, a golden bug further out, and seeds anywhere', () => {
+    const { inner, place, distTo } = runningHarvest(2);
+    inner.teams.get(1)!.sim.score = 2000;
+    inner.teams.get(2)!.sim.score = 300;
+
+    const star = POND_ITEMS.pond_star.nearTrailingTeam!;
+    const bug = POND_ITEMS.golden_bug.nearTrailingTeam!;
+    expect(POND_ITEMS.glow_seed.nearTrailingTeam).toBeNull();
+    // The more it is worth, the nearer: the star's ring lies inside the bug's
+    expect(star.maxDist).toBeLessThanOrEqual(bug.minDist);
+
+    for (const pos of place('pond_star', 200)) {
+      const d = distTo(2, pos);
+      expect(d).toBeGreaterThanOrEqual(star.minDist - 1);
+      expect(d).toBeLessThanOrEqual(star.maxDist + 1);
+      expect(d).toBeLessThan(distTo(1, pos));
+    }
+    for (const pos of place('golden_bug', 200)) {
+      const d = distTo(2, pos);
+      expect(d).toBeGreaterThanOrEqual(bug.minDist - 1);
+      expect(d).toBeLessThanOrEqual(bug.maxDist + 1);
+      expect(d).toBeLessThan(distTo(1, pos));
+    }
+    // Seeds are not steered: plenty land nearer the leader, and plenty beyond the bug ring
+    const seeds = place('glow_seed', 300);
+    expect(seeds.filter((pos) => distTo(1, pos) < distTo(2, pos)).length).toBeGreaterThan(60);
+    expect(seeds.filter((pos) => distTo(2, pos) > bug.maxDist).length).toBeGreaterThan(60);
+
+    // The lead changes hands, and so does the help
+    inner.teams.get(2)!.sim.score = 5000;
+    for (const pos of place('pond_star', 100)) {
+      expect(distTo(1, pos)).toBeLessThanOrEqual(star.maxDist + 1);
+    }
+  });
+
+  it('steers nothing while the scores are level, and shares the help between teams tied for last', () => {
+    const { inner, place, distTo } = runningHarvest(3);
+    const star = POND_ITEMS.pond_star.nearTrailingTeam!;
+
+    // 0 : 0 : 0, as at the start of every round
+    const level = place('pond_star', 300);
+    const nearSomeone = level.filter((pos) => [1, 2, 3].some((t) => distTo(t, pos) <= star.maxDist)).length;
+    expect(nearSomeone).toBeLessThan(240);
+
+    // Team 1 ahead, Teams 2 and 3 tied for last: both get stars, the leader gets none
+    inner.teams.get(1)!.sim.score = 900;
+    const helped = { 2: 0, 3: 0 };
+    for (const pos of place('pond_star', 300)) {
+      const nearest = [1, 2, 3].reduce((best, t) => (distTo(t, pos) < distTo(best, pos) ? t : best), 1);
+      expect(nearest).not.toBe(1);
+      helped[nearest as 2 | 3] += 1;
+    }
+    expect(helped[2]).toBeGreaterThan(60);
+    expect(helped[3]).toBeGreaterThan(60);
+  });
+
+  it('applies the rule to items that respawn during a real round', () => {
+    const { session, inner } = runningHarvest(2);
+    const star = POND_ITEMS.pond_star.nearTrailingTeam!;
+    const bug = POND_ITEMS.golden_bug.nearTrailingTeam!;
+    const leader = inner.teams.get(1)!.sim;
+    const trailing = inner.teams.get(2)!.sim;
+    const home = { x: leader.x, y: leader.y };
+
+    // Team 1 keeps collecting (dropped onto an item, then sent home); Team 2 never moves or scores
+    const known = new Map<string, string>();
+    for (const it of session.getPublicSnapshot().round.items) known.set(it.itemId, `${it.variant}@${it.x},${it.y}`);
+    let steered = 0;
+    for (let i = 0; i < 400 && steered < 12; i++) {
+      const target = session.getPublicSnapshot().round.items.find((it) => it.available)!;
+      leader.x = target.x;
+      leader.y = target.y;
+      session.stepSimulation(20);
+      leader.x = home.x;
+      leader.y = home.y;
+      session.stepSimulation(GAME_DEFAULTS.itemRespawnDelayMs + 20);
+      for (const it of session.getPublicSnapshot().round.items) {
+        const signature = `${it.variant}@${it.x},${it.y}`;
+        if (!it.available || known.get(it.itemId) === signature) continue;
+        known.set(it.itemId, signature);
+        const ring = it.variant === 'pond_star' ? star : it.variant === 'golden_bug' ? bug : null;
+        if (!ring) continue;
+        const d = Math.hypot(trailing.x - it.x, trailing.y - it.y);
+        expect(d).toBeGreaterThanOrEqual(ring.minDist - 1);
+        expect(d).toBeLessThanOrEqual(ring.maxDist + 1);
+        steered += 1;
+      }
+    }
+    expect(steered).toBeGreaterThanOrEqual(12);
+    expect(session.getPublicSnapshot().teams[0].sim.score).toBeGreaterThan(0);
+    expect(session.getPublicSnapshot().teams[1].sim.score).toBe(0);
+  });
+
+  it('never drops an item on a creature, on another item, or outside the pond', () => {
+    const { session, inner, place } = runningHarvest(4);
+    inner.teams.get(1)!.sim.score = 1000;
+    inner.teams.get(2)!.sim.score = 400;
+    inner.teams.get(3)!.sim.score = 400;
+    const round = session.getPublicSnapshot().round;
+    const clearOfCreature = GAME_DEFAULTS.creatureBodyRadius + GAME_DEFAULTS.itemCollisionRadius;
+    for (const variant of ['glow_seed', 'golden_bug', 'pond_star'] as const) {
+      for (const pos of place(variant, 150)) {
+        expect(pos.x).toBeGreaterThan(0);
+        expect(pos.x).toBeLessThan(round.arenaWidth);
+        expect(pos.y).toBeGreaterThan(0);
+        expect(pos.y).toBeLessThan(round.arenaHeight);
+        for (const team of inner.teams.values()) {
+          expect(Math.hypot(team.sim.x - pos.x, team.sim.y - pos.y)).toBeGreaterThan(clearOfCreature);
+        }
+        for (const it of round.items) {
+          expect(Math.hypot(it.x - pos.x, it.y - pos.y)).toBeGreaterThan(GAME_DEFAULTS.itemCollisionRadius * 2);
+        }
+      }
+    }
+  });
+
+  it('keeps the same seed producing the same pond', () => {
+    const itemsFor = () => {
+      const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+      joinAndCalibrate(session, 'a', 1);
+      joinAndCalibrate(session, 'b', 2);
+      session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'freewater', scoringEnabled: true, seed: 4242 });
+      return session.getPublicSnapshot().round.items.map((it) => `${it.variant}@${it.x},${it.y}`);
+    };
+    expect(itemsFor()).toEqual(itemsFor());
+  });
+
+  it('sets the music volume from Mission Control, 70% by default, kept across a session clear', () => {
+    const session = new ClassroomGameSession();
+    expect(MUSIC_VOLUME_DEFAULT).toBe(70);
+    expect(session.getPublicSnapshot().musicVolume).toBe(70);
+    expect(session.executeHostCommand({ commandId: 'v1', type: 'set_music_volume', volume: 35 }).ok).toBe(true);
+    expect(session.getPublicSnapshot().musicVolume).toBe(35);
+    expect(session.executeHostCommand({ commandId: 'v2', type: 'set_music_volume', volume: 0 }).ok).toBe(true);
+    expect(session.getPublicSnapshot().musicVolume).toBe(0);
+    for (const [id, volume] of [
+      ['b1', -1],
+      ['b2', 101],
+      ['b3', Number.NaN],
+      ['b4', 'loud' as unknown as number],
+    ] as const) {
+      expect(session.executeHostCommand({ commandId: id, type: 'set_music_volume', volume }).ok).toBe(false);
+    }
+    expect(session.getPublicSnapshot().musicVolume).toBe(0);
+    session.executeHostCommand({ commandId: 'v3', type: 'set_music_volume', volume: 88 });
+    // The switch and the slider are independent
+    expect(session.getPublicSnapshot().musicEnabled).toBe(false);
+    session.executeHostCommand({ commandId: 'clr', type: 'clear_session', confirmClearSession: true });
+    expect(session.getPublicSnapshot().musicVolume).toBe(88);
+  });
+
+  it('offers a pool of distinct single-glyph emoji that avoids game symbols', () => {
+    expect(new Set(PLAYER_EMOJI_POOL).size).toBe(PLAYER_EMOJI_POOL.length);
+    expect(PLAYER_EMOJI_POOL.length).toBeGreaterThanOrEqual(40);
+    for (const emoji of PLAYER_EMOJI_POOL) {
+      // One code point each: no variation selectors, skin tones, or joined sequences
+      expect(Array.from(emoji)).toHaveLength(1);
+    }
+    for (const reserved of ['⭐', '🌟', '✨', '🐞', '🌱', '✅', '✔', '❌']) {
+      expect(PLAYER_EMOJI_POOL).not.toContain(reserved);
+    }
+  });
+
+  it('gives all 30 players a different emoji, shown on their limb and their phone', () => {
+    const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    const seats: PlayerPrivateSeat[] = [];
+    for (let i = 0; i < 30; i++) seats.push(joinAndCalibrate(session, `e${i}`, 1 + (i % 5)));
+    const emoji = seats.map((seat) => seat.playerEmoji);
+    for (const e of emoji) expect(PLAYER_EMOJI_POOL).toContain(e);
+    expect(new Set(emoji).size).toBe(30);
+
+    const snap = session.getPublicSnapshot();
+    for (const seat of seats) {
+      const limb = snap.teams
+        .find((t) => t.teamNumber === seat.teamNumber)!
+        .limbs.find((l) => l.assignedPlayerId === seat.playerId)!;
+      expect(limb.playerEmoji).toBe(seat.playerEmoji);
+    }
+    const roster = session.getHostSnapshot().players;
+    expect(roster.map((p) => p.playerEmoji).sort()).toEqual([...emoji].sort());
+  });
+
+  it('assigns emoji at random rather than by join order', () => {
+    const firstEmoji = new Set<string>();
+    for (let run = 0; run < 40; run++) {
+      const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+      firstEmoji.add(joinAndCalibrate(session, `r${run}`, 1).playerEmoji);
+    }
+    expect(firstEmoji.size).toBeGreaterThan(5);
+  });
+
+  it('keeps a player\'s emoji through a reconnect and through losing and regaining their limb', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({ nowFn: () => clock.nowMs, initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    const a = joinAndCalibrate(session, 'a', 1);
+    const b = joinAndCalibrate(session, 'b', 1);
+
+    // Quick refresh
+    session.handleSocketDisconnect('a');
+    const quick = session.resumePlayer('a2', a.resumeToken);
+    expect(quick.ok).toBe(true);
+    expect(quick.data!.playerEmoji).toBe(a.playerEmoji);
+
+    // Gone long enough to lose the limb, then back
+    session.handleSocketDisconnect('b');
+    clock.nowMs += GAME_DEFAULTS.disconnectedLimbGraceMs + 1000;
+    session.stepSimulation(100);
+    expect(session.getPublicSnapshot().teams[0].limbCount).toBe(1);
+    // A newcomer meanwhile does not get the away player's emoji
+    const c = joinAndCalibrate(session, 'c', 1);
+    expect(c.playerEmoji).not.toBe(b.playerEmoji);
+    const back = session.resumePlayer('b2', b.resumeToken);
+    expect(back.ok).toBe(true);
+    expect(back.data!.playerEmoji).toBe(b.playerEmoji);
+    const limbs = session.getPublicSnapshot().teams[0].limbs;
+    expect(limbs.map((l) => l.playerEmoji).sort()).toEqual([a.playerEmoji, b.playerEmoji, c.playerEmoji].sort());
+  });
+});
+
+describe('Revision 0.7 — the guide is revealed step by step from Mission Control', () => {
+  it('orders the reveal: the game idea, steps 1 to 3, and the QR code last', () => {
+    expect(GUIDE_STEPS.map((st) => st.id)).toEqual(['game', 'join', 'motion', 'sweeps', 'qr']);
+  });
+
+  it('opens a fresh session on the first card and reveals more only on the facilitator\'s command', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({ nowFn: () => clock.nowMs, initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    const step = (n: number, id: string) => session.executeHostCommand({ commandId: id, type: 'set_guide_step', step: n });
+    expect(session.getPublicSnapshot()).toMatchObject({ guideVisible: true, guideStep: 1 });
+
+    // Nothing reveals itself: time passing and a player joining leave the guide where it is
+    clock.nowMs += 600000;
+    session.stepSimulation(1000);
+    joinAndCalibrate(session, 'early', 1);
+    expect(session.getPublicSnapshot().guideStep).toBe(1);
+
+    for (let n = 2; n <= GUIDE_STEPS.length; n++) {
+      expect(step(n, `fwd${n}`).ok).toBe(true);
+      expect(session.getPublicSnapshot().guideStep).toBe(n);
+    }
+    // Back is allowed (hides the QR code again), and any step can be jumped to
+    expect(step(3, 'back').ok).toBe(true);
+    expect(session.getPublicSnapshot().guideStep).toBe(3);
+
+    for (const [id, n] of [
+      ['bad0', 0],
+      ['bad6', GUIDE_STEPS.length + 1],
+      ['badNaN', Number.NaN],
+      ['badStr', 'next' as unknown as number],
+    ] as const) {
+      expect(step(n, id).code).toBe('INVALID_GUIDE_STEP');
+    }
+    expect(session.getPublicSnapshot().guideStep).toBe(3);
+  });
+
+  it('keeps its place when the guide is hidden and shown, and starts over only with a cleared session', () => {
+    const session = new ClassroomGameSession({ initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    session.executeHostCommand({ commandId: 's', type: 'set_guide_step', step: 4 });
+    session.executeHostCommand({ commandId: 'h', type: 'set_guide_visible', visible: false });
+    session.executeHostCommand({ commandId: 'v', type: 'set_guide_visible', visible: true });
+    expect(session.getPublicSnapshot()).toMatchObject({ guideVisible: true, guideStep: 4 });
+
+    // Stepping does not show a hidden guide or disturb a phase
+    session.executeHostCommand({ commandId: 'l', type: 'load_phase', phase: 'training' });
+    session.executeHostCommand({ commandId: 'st', type: 'start_phase' });
+    expect(session.executeHostCommand({ commandId: 's5', type: 'set_guide_step', step: 5 }).ok).toBe(true);
+    expect(session.getPublicSnapshot()).toMatchObject({ guideVisible: false, guideStep: 5, phase: 'training', runStatus: 'running' });
+
+    session.executeHostCommand({ commandId: 'clr', type: 'clear_session', confirmClearSession: true });
+    expect(session.getPublicSnapshot()).toMatchObject({ guideVisible: true, guideStep: 1 });
+  });
+
+  it('starts the joining clock when the explanation begins, before anyone has joined', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({ nowFn: () => clock.nowMs });
+    clock.nowMs += 90000;
+    expect(session.getPublicSnapshot().sectionClock.running).toBe(false);
+    session.executeHostCommand({ commandId: 'g2', type: 'set_guide_step', step: 2 });
+    expect(session.getPublicSnapshot().sectionClock).toMatchObject({ section: 'joining', running: true, elapsedMs: 0 });
+    clock.nowMs += 30000;
+    // Later steps do not restart it
+    session.executeHostCommand({ commandId: 'g3', type: 'set_guide_step', step: 3 });
+    expect(session.getPublicSnapshot().sectionClock.elapsedMs).toBe(30000);
+
+    // Returning to the first card on a fresh session does not start it
+    const other = new ClassroomGameSession({ nowFn: () => clock.nowMs });
+    other.executeHostCommand({ commandId: 'g1', type: 'set_guide_step', step: 1 });
+    expect(other.getPublicSnapshot().sectionClock.running).toBe(false);
+  });
+
+  it('loading the Explanation starts it from the first card and starts the joining clock', () => {
+    const clock = { nowMs: 1000 };
+    const session = new ClassroomGameSession({ nowFn: () => clock.nowMs, initialMinTeamSize: 1, initialMaxTeamSize: 6 });
+    const wait = (ms: number) => {
+      clock.nowMs += ms;
+      session.stepSimulation(ms);
+    };
+    wait(120000);
+    expect(session.getPublicSnapshot().sectionClock.running).toBe(false);
+
+    // Load Phase on step 1 of the session list
+    expect(
+      session.executeHostCommand({ commandId: 'load', type: 'set_guide_visible', visible: true, fromStart: true }).ok,
+    ).toBe(true);
+    expect(session.getPublicSnapshot()).toMatchObject({ guideVisible: true, guideStep: 1 });
+    expect(session.getPublicSnapshot().sectionClock).toMatchObject({ section: 'joining', running: true, remainingMs: 240000 });
+
+    // The clock runs on through every reveal; stepping never restarts it
+    wait(20000);
+    for (let n = 2; n <= GUIDE_STEPS.length; n++) {
+      session.executeHostCommand({ commandId: `n${n}`, type: 'set_guide_step', step: n });
+      wait(10000);
+    }
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(240000 - 20000 - 40000);
+
+    // The plain show/hide toggle keeps both the place and the clock
+    session.executeHostCommand({ commandId: 'h', type: 'set_guide_visible', visible: false });
+    session.executeHostCommand({ commandId: 'v', type: 'set_guide_visible', visible: true });
+    expect(session.getPublicSnapshot().guideStep).toBe(GUIDE_STEPS.length);
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(180000);
+
+    // Loading it again is a fresh start, like loading any phase twice
+    joinAndCalibrate(session, 'a', 1);
+    session.executeHostCommand({ commandId: 'load2', type: 'set_guide_visible', visible: true, fromStart: true });
+    expect(session.getPublicSnapshot()).toMatchObject({ guideStep: 1 });
+    expect(session.getPublicSnapshot().sectionClock.remainingMs).toBe(240000);
+
+    // Over another phase it rewinds the guide but leaves that phase's clock alone
+    session.executeHostCommand({ commandId: 't', type: 'load_phase', phase: 'training' });
+    wait(30000);
+    session.executeHostCommand({ commandId: 's', type: 'set_guide_step', step: 4 });
+    session.executeHostCommand({ commandId: 'load3', type: 'set_guide_visible', visible: true, fromStart: true });
+    expect(session.getPublicSnapshot()).toMatchObject({ phase: 'training', guideVisible: true, guideStep: 1 });
+    expect(session.getPublicSnapshot().sectionClock).toMatchObject({ section: 'training', remainingMs: 90000 });
   });
 });

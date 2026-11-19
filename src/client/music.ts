@@ -9,10 +9,16 @@
  * in time with one another, and phone audio is optional anyway (spec Section 8).
  *
  * Audio is optional by design: every failure here (no Web Audio, blocked autoplay, a missing or
- * undecodable file) leaves the display silent and fully usable. Browsers refuse to start audio
- * until the page has been clicked or a key pressed; `needsUnlock()` reports that and `unlock()` is
- * called from a user gesture.
+ * undecodable file) leaves the display silent and fully usable.
+ *
+ * Browsers refuse to start audio until the page has been clicked or a key pressed, and no page can
+ * waive that. So the display calls `prime()` on every click or key press, from the moment it opens:
+ * the audio device is then ready before the facilitator switches music on, and music starts without
+ * a further click. If nobody has touched the page, `needsUnlock()` is true and `onBlockedChange`
+ * tells the display to say so.
  */
+
+import { MUSIC_VOLUME_DEFAULT } from '../shared/constants.js';
 
 /** What the room is doing, which decides the track. `silent` plays nothing. */
 export type MusicMood = 'lobby' | 'practice' | 'game' | 'results' | 'silent';
@@ -36,7 +42,11 @@ const MOOD_LOOP: Record<Exclude<MusicMood, 'silent'>, TrackId> = {
   results: 'lobby',
 };
 
-const MASTER_LEVEL = 0.6;
+/** Facilitator volume (0..100) to output gain. Squared so the slider feels even to the ear. */
+function volumeToGain(volume: number): number {
+  const v = Math.max(0, Math.min(100, volume)) / 100;
+  return v * v;
+}
 /** Every track is brought to this average level so a swapped-in file is not louder than the rest */
 const TARGET_RMS_DB = -19;
 const MAX_TRACK_GAIN = 2.5;
@@ -109,6 +119,14 @@ export class PartyMusic {
   private playingMood: MusicMood | null = null;
   private voices: PlayingVoice[] = [];
   private muted = false;
+  private volume: number = MUSIC_VOLUME_DEFAULT;
+
+  /** Loudness chosen by the facilitator in Mission Control, 0..100. */
+  setVolume(volume: number): void {
+    if (!Number.isFinite(volume) || volume === this.volume) return;
+    this.volume = volume;
+    this.applyMasterLevel(0.12);
+  }
 
   /** True while a mood with music is selected, whether or not the browser has let it start yet. */
   isActive(): boolean {
@@ -120,9 +138,16 @@ export class PartyMusic {
     return this.isActive() && this.ctx !== null && this.ctx.state !== 'running';
   }
 
-  /** Call from a click or key handler. */
-  unlock(): void {
-    if (this.ctx && this.ctx.state !== 'running') void this.ctx.resume();
+  /** Called whenever the browser starts or stops holding the music back. */
+  onBlockedChange: ((blocked: boolean) => void) | null = null;
+
+  /**
+   * Call from every click or key handler, whether or not music is on yet. Opens the audio device
+   * inside the user gesture, which is the only moment a browser allows it.
+   */
+  prime(): void {
+    if (!this.ensureContext()) return;
+    if (this.ctx!.state !== 'running') void this.ctx!.resume();
   }
 
   /** Local mute for this display (its Sound button); the facilitator's switch chooses the mood. */
@@ -140,8 +165,10 @@ export class PartyMusic {
     }
     if (!this.ensureContext()) return;
     if (this.ctx!.state === 'suspended') void this.ctx!.resume();
+    this.applyMasterLevel(0.2);
     this.loadTracks();
     this.syncPlayback();
+    this.onBlockedChange?.(this.needsUnlock());
   }
 
   stop(): void {
@@ -160,6 +187,7 @@ export class PartyMusic {
     }
     this.voices = [];
     this.playingMood = null;
+    if (this.ctx) this.ctx.onstatechange = null;
     void this.ctx?.close();
     this.ctx = null;
     this.master = null;
@@ -220,6 +248,12 @@ export class PartyMusic {
       this.master = master;
       this.analyser = analyser;
       this.applyMasterLevel(0.3);
+      // When the browser lets the audio run (or stops it), set the level again and tell the display
+      ctx.onstatechange = () => {
+        if (this.ctx !== ctx) return;
+        this.applyMasterLevel(0.15);
+        this.onBlockedChange?.(this.needsUnlock());
+      };
       return true;
     } catch {
       return false;
@@ -228,9 +262,14 @@ export class PartyMusic {
 
   private applyMasterLevel(rampSec: number): void {
     if (!this.ctx || !this.master) return;
-    const target = this.muted ? 0 : MASTER_LEVEL;
+    const target = this.muted ? 0 : volumeToGain(this.volume);
     const now = this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(now);
+    if (this.ctx.state !== 'running') {
+      // A held-back context's clock is not moving, so a ramp scheduled now could be lost; set it outright
+      this.master.gain.value = target;
+      return;
+    }
     this.master.gain.setValueAtTime(this.master.gain.value, now);
     this.master.gain.linearRampToValueAtTime(target, now + rampSec);
   }

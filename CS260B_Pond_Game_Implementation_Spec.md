@@ -1,6 +1,6 @@
 # CS260B Shared-Body Pond Game — Implementation Specification
 
-Version: 0.5 · Prepared: 15 November 2026 · Revised: 18 November 2026
+Version: 0.7 · Prepared: 15 November 2026 · Revised: 18 November 2026
 
 Status: implementation handoff; the game has not been implemented or validated on physical phones.
 
@@ -11,6 +11,10 @@ Revision 0.3 records further decisions from the same owner's second playtest: cr
 Revision 0.4 records decisions from the owner's third round of feedback: the three beats of a stroke are named **Press, Move, Release** on every surface and shown prominently on the phone and the training display; Game 2 Prep has items to collect; items come in three kinds with different points and different sizes of celebration; Game 2 has a large live scoreboard; optional background music is switched globally from Mission Control; iPhone's Shake to Undo is mitigated as far as a web page can; and creatures gain and lose limbs dynamically as players leave and return. The last item replaces the earlier rule that a disconnect never removes a limb, and with it the unqualified forms of two statements in `AGENTS.md` ("a player keeps the same … limb … throughout the activity" and "do not give a team more power because a participant disconnects"); Section 10.1 gives the rule that now applies.
 
 Revision 0.5 records the owner's session plan and three related decisions. (1) The activity is planned as eight timed sections totalling 25 minutes (Section 3.1.1), and every section has a **section clock** that starts when the phase is loaded, counts down from the planned time, and turns red and runs negative when the section overruns. **Game 1 and Game 2 are the only phases the clock ends**: a scored game stops when its clock reaches zero. Every other section, including both prep rounds, is only paced by the clock and ends when the facilitator moves on. The clock starts at load, not at Start, because the owner needs it to keep the class on schedule. This replaces "both games default to 7 minutes" from revision 0.2: Game 1 now has 4 minutes and Game 2 has 5, each counted from load. (2) The background music is recorded loops chosen from Freesound under Creative Commons 0 instead of a tune synthesized in the browser (Section 8.1). (3) The phone no longer shows a tip about switching Shake to Undo off; the reload after joining is the whole mitigation (Section 6.1).
+
+Revision 0.6 records three further decisions from the owner. (1) **Catch-up item placement** in Game 2: the more a new item is worth, the closer to the lowest-scoring team it appears (Section 10.4). (2) A **music volume slider** in Mission Control (Section 8.1). (3) Every player is given a **random emoji**, shown in front of their nickname on their limb and on their phone, drawn from a pool chosen to be as different from one another as possible (Section 6.1).
+
+Revision 0.7 records how the owner presents the game to the class: the how-to-play guide is **revealed one step at a time from Mission Control** (Section 5.1). It opens on a single card, The Game, which now carries one sentence tying the activity to the reading and no longer says "Practice first, then race across the pond and find out what makes you fast!". The facilitator then reveals Step 1 without the QR code or address, Step 2, and Step 3, and shows the QR code and address only once the explanation is finished.
 
 ## 1. Read this first
 
@@ -51,7 +55,7 @@ No accounts, grades, or formal human-subjects data collection are required.
 | Input | Easy directional movements, including left-to-right, right-to-left, and diagonal sweeps. |
 | Seated use | Keep movements compact and below approximately 50 cm. Small comfortable movements are the normal case. |
 | Stroke cycle | Press and hold during the working movement; release while returning to the starting position. |
-| Explanation | A how-to-play page on the classroom display opens the session. |
+| Explanation | A how-to-play page on the classroom display opens the session. The facilitator reveals it step by step, and the join QR code comes last (revision 0.7). |
 | Training | A checkerboard/grid of team cards on the classroom display. Each card contains its team's creature and live limb feedback, including sweeps a player makes during the phone's own practice step. A how-to panel sits on the left of the grid with the three beats of a stroke (Press, Move, Release) and a reminder to lock screen rotation; the join QR is one tap away for latecomers. |
 | Recognition feedback | A successful movement causes visible feedback, such as a green highlight, and a small forward-swimming response. |
 | First game | Straight swimming race to a finish line. A creature moves fast only when its limbs stroke at the same time: the more limbs in sync the faster, and unsynchronized strokes are penalized. The race does not stop when the first creature finishes; it ends when the last creature finishes or its section clock reaches zero. |
@@ -103,7 +107,7 @@ The classroom display must not expose private controls or authentication credent
 ### 3.1 Normal classroom sequence
 
 1. Facilitator sets the universal minimum and maximum team size on Mission Control (default 4–6); team count and per-team sizes configure automatically as players join.
-2. **Explanation.** A fresh session opens on the how-to-play page, which carries the join QR code and a readable short URL (Section 5.1). Hiding it reveals the lobby, where only teams that have joined are shown and their cards resize as more teams join.
+2. **Explanation.** A fresh session opens on the first card of the how-to-play page. The facilitator reveals the rest while explaining, ending with the join QR code and a readable short URL (Section 5.1). Hiding it reveals the lobby, where only teams that have joined are shown and their cards resize as more teams join.
 3. Players enter their assigned team number, receive a limb, enable motion access, complete calibration, and begin their three practice sweeps.
 4. **Training.** Facilitator loads and starts training. The display shows the Press / Move / Release how-to and a lock-your-rotation reminder on the left, and the team-card grid beside it. Practice sweeps, including those made in the phone's practice step, animate the corresponding limbs and generate green success feedback.
 5. **Game 1 Prep.** Unscored lane practice. Teams swim laps and experiment; the synchrony rule is not announced.
@@ -140,7 +144,8 @@ The **section clock** (confirmed requirement):
 - **At zero it ends Game 1 and Game 2, and nothing else** (confirmed requirement). A scored game that is running when its clock reaches zero finishes at once with the result `time_up`: Game 1 ranks unfinished creatures by distance, Game 2 ranks by score. In every other section (joining, training, both prep rounds, both discussions) reaching zero does not end, pause, lock, or change anything: the clock goes red and the facilitator moves on when they choose.
 - **It starts when the phase is loaded** (confirmed requirement), from the full planned time. Time spent staging before **Start**, and the 3-second countdown, come out of a game's time. This is deliberate: the clock exists to keep the class on schedule.
 - It measures class time, so it is not frozen by pausing a round, and resetting a round within the same section does not restart it.
-- The joining section has no load command, so its clock waits at the full time and starts when the first player joins or when the facilitator presses **Start Clock**, whichever comes first.
+- The joining section's clock starts from the full time when the facilitator loads the **Explanation** step (confirmed requirement: the how-to-play has a running countdown like every other loaded step). On a fresh session where nothing has been loaded yet it waits at the full time, and starts when the facilitator reveals the guide's second step, when the first player joins, or when the facilitator presses **Start Clock**, whichever comes first.
+- The guide covers the display's header, so it shows the section clock itself, at the top right, through every step of the reveal.
 - Mission Control can change the planned time of the section on screen and can restart the clock. In a live scored game either action moves the moment the game ends, so a facilitator can give a game more time. Planned times are facilitator settings: they survive a session clear and return to the defaults when the server restarts.
 - Engineering defaults for the edges of the time-up rule:
   - A scored game that is **started after its section time was already used up** is not ended the instant it starts. It runs without an automatic end, Mission Control says so when it starts, and restarting the clock or lengthening the planned time brings the automatic end back. The same applies to a round reset after time ran out.
@@ -237,7 +242,24 @@ Design for a 16:9 classroom screen, especially 1920 × 1080, while remaining usa
 - A compact public header shows phase, the section clock, and pause/countdown status.
 - In training, teams have already joined, so the panel to the left of the card grid is a how-to rather than the join panel. Its main content is the three beats of every stroke in large type, **1 Press** and hold the big button, **2 Move** the phone along your arrow, **3 Release** then bring the phone back, with the highlight walking through them in order. Below it is the rotation-lock reminder: where to find the control on iPhone (Control Center) and Android (Auto-rotate in quick settings). It returns every time training is loaded, and the display can hide and re-show it. If training is loaded before any team has joined, the join panel is shown instead.
 - Outside the lobby, training included, the join QR is an expandable corner drawer for latecomers, kept away from active creature visuals and unavailable while admission is locked.
-- A how-to-play guide covers the display at the beginning. It shows the join QR and URL, the nickname and team-number step, the motion-permission reminder (Safari on iPhone, Chrome on Android), a reminder to lock screen rotation, the six sweeps with the Press / Move / Release beats, and the shared-creature idea. It does not state the synchrony rule. It is presentation only, is showing when a session is created or cleared, can be toggled by the facilitator, cannot be turned on during a countdown or running phase, and hides automatically when a phase is loaded, starts, or resumes. The display itself has no control to show or hide it.
+- A how-to-play guide covers the display at the beginning. It shows the join QR and URL, the nickname and team-number step, the motion-permission reminder, a reminder to lock screen rotation, the six sweeps with the Press / Move / Release beats, and the shared-creature idea. It does not state the synchrony rule. It does not tell players which browser to use (the line "iPhone: open the page in Safari. Android: use Chrome." was removed at the owner's request); Safari on iPhone and Chrome on Android remain the browsers the game is validated against (Section 6).
+- **Stepped reveal** (confirmed requirement, revision 0.7): the guide appears in five steps, each added by the facilitator from Mission Control, so the class listens before phones come out.
+
+  | Step | What is added to the display |
+  | --- | --- |
+  | 1 | **The Game**, alone and large in the middle of the screen |
+  | 2 | **Step 1, Scan & Join**, with a placeholder where the QR code will be and no address |
+  | 3 | **Step 2, Allow Motion** |
+  | 4 | **Step 3, Learn Your Sweep** |
+  | 5 | The **QR code and join address**, in Step 1's panel |
+
+  - The Game card reads: your team shares one creature and each player is one limb; you keep the same team, limb, and sweep the whole time; and one sentence linking the activity to the reading, "It is homuncular flexibility in action: a small sweep of your phone is remapped onto a limb your own body does not have." That sentence is draft wording written without the course PDF to hand, for the owner to confirm.
+  - Mission Control has **Back** and **Next**, names what Next will reveal, and lists the five steps so any one can be jumped to. Going back hides what came after, including the QR code.
+  - Nothing reveals itself: neither time nor a player joining advances the guide. A fresh or cleared session starts at step 1. Hiding and re-showing the guide keeps its place.
+  - Panels not yet revealed keep their place in the layout but are invisible, so nothing moves when the next one appears; the newest panel is marked. Before step 5 the display shows no QR code or address anywhere while the guide is up.
+  - Hiding the QR code is presentation only. It does not lock admission: a phone that already has the address can still join. Use the admission lock for that.
+  - Loading the **Explanation** step from Mission Control's phase list shows the guide from step 1 and starts the joining section's clock from its full time (in the lobby). The plain Show/Hide Guide toggle does neither. If the clock is still waiting when the facilitator moves past step 1, that starts it.
+  - The guide carries a title bar with the section clock at the top right, because it covers the normal header. The clock keeps running through the whole reveal. It is presentation only, is showing when a session is created or cleared, can be toggled by the facilitator, cannot be turned on during a countdown or running phase, and hides automatically when a phase is loaded, starts, or resumes. The display itself has no control to show or hide it.
 - No administrative reset, calibration, score-editing, or test-input buttons on the real projected view.
 
 ### 5.2 Each training card
@@ -275,6 +297,8 @@ A discussion fills the display with one panel: which discussion it is, a short t
 
 The leaderboard shows the combined standings (Section 10.5), each team's Game 1 and Game 2 lines, and a few session highlights (fastest finish, best team sync, biggest harvest, total strokes landed). A highlight shared by several teams names all of them. Before any scored game has finished it says so instead of showing an empty table.
 
+To the left of the standings the leaderboard carries a card with a **QR code to the project's public source repository** (confirmed requirement: the owner announces to the class that the project is open source), headed "Open Source!", with the address in plain text underneath. The address is the constant `PROJECT_REPO_URL` and must be the repository's real public address, never a placeholder. The card appears only in the leaderboard phase, including when no game has been played. The repository currently has **no licence file**; a licence is what makes a public repository open source in the legal sense, and choosing one is the owner's decision.
+
 Neither display offers any control.
 
 ## 6. Phone controller and onboarding
@@ -289,6 +313,11 @@ The QR code opens the public participant URL and identifies the session. The pla
 - Allocate a seat atomically so two simultaneous joins cannot take the same limb.
 - Require a short display name or nickname (engineering default: at most 16 characters after trimming; control and invisible characters removed). Names need not be unique; the limb number still disambiguates. On creature limb labels, teammates who chose the same nickname get their limb number appended (**Sam 1**, **Sam 2**).
 - Show the nickname with the limb on the classroom display and Mission Control so teammates and the facilitator can tell who controls which limb.
+- **Player emoji** (confirmed requirement, revision 0.6): the server gives every player one emoji at random when they join, and it is shown in front of the nickname wherever the limb is named: the limb label on the classroom display, the training card chips, the phone's header and controller, and the Mission Control roster. On the limb label it is drawn larger than the lettering and is never truncated.
+  - The emoji is part of the player's identity: it is kept across reconnects, scoped resets, and losing and regaining a limb, and is discarded only with the session.
+  - No two players in a session share one while the pool lasts. The pool (engineering default, `PLAYER_EMOJI_POOL`) has 48 entries for at most 30 players. If every entry is in use by players who are away, an emoji may repeat, but never within one creature.
+  - The pool is chosen to be as distinguishable as possible at label size: varied silhouettes and colors across animals, food, nature, and objects; no two alike in both shape and color; single code points only (no variation selectors, skin tones, or joined sequences, which render inconsistently); nothing newer than 2016 so older phones have the glyph; and nothing that could be read as a game item or a status mark (no stars, bugs, seeds, or check marks).
+  - The emoji is decoration that aids recognition. The nickname remains the label, so nothing depends on a device being able to draw a given emoji. Rendering was checked in Chromium on Linux only; how each emoji looks on iPhone and Android is **unverified**.
 - Show an unmistakable confirmation: **Sam · Team 4 · Limb 2**, matching classroom identity.
 - Give a session-scoped persistent player identity and resume token, independent of the transient socket ID.
 - A page refresh/reconnect should restore that identity and its assignments. A second tab must not create a duplicate active controller for the same seat. A player away for longer than the limb grace period keeps the identity but gives up the limb until they return (Section 10.1).
@@ -447,6 +476,7 @@ Haptics are optional enhancement, not a device eligibility requirement.
 Optional party-game style background music (confirmed requirement, revision 0.4; redone with recorded tracks in revision 0.5).
 
 - One global switch in Mission Control turns it on or off for the session. It is off by default and is not reset by clearing the session.
+- A **volume slider** in Mission Control (confirmed requirement, revision 0.6) sets the loudness on the classroom display from 0 to 100%, live while it is dragged. The default is 70%. Like the switch, it is a facilitator setting kept across a session clear. 0% is silent without switching the music off. The display's own system volume still applies on top.
 - It plays from the classroom display only. Phones stay silent: thirty copies would not stay in time with each other.
 - The music is four recorded files in `public/music/`, all published on Freesound under Creative Commons 0 and recorded in `public/music/CREDITS.txt`:
 
@@ -462,7 +492,11 @@ Optional party-game style background music (confirmed requirement, revision 0.4;
 - A track is replaced by putting a file with the same name in `public/music/`. Loudness is balanced automatically when a track loads, and encoder padding at the ends of a loop is skipped so the loop does not hiccup.
 - A track that fails to load stays silent and nothing else is affected. Nothing is downloaded until music is switched on.
 - **The selection is unvalidated by ear.** The tracks were chosen from their Freesound download counts, ratings, and descriptions, and measured (tempo, whole-bar length, level, a clean join at the loop point), but nobody has listened to them in a classroom. Whether they suit the room is for the owner to judge.
-- Browsers block audio until the page has been clicked. A display that is waiting for that click shows a button saying so; the display's own Sound button also mutes the music locally.
+- Browsers block audio until the page has been clicked or a key pressed, and a page cannot waive that. The display therefore:
+  - opens its audio on the **first click or key press anywhere on the page, at any time**, including before music has been switched on, so that music switched on later starts by itself;
+  - when music is on and the page has still never been touched, shows a prompt, "Click anywhere on this screen to start the music", **on top of everything, the how-to-play guide included** (an earlier build put it in the header, which the guide covers, so during the first phase there was no visible way to start the music);
+  - does not let the click that starts the music also toggle the Sound button: a first click on **Sound On** starts the music and leaves sound on.
+- The display's own Sound button mutes the music locally.
 - Music is presentation only and never affects game state, and nothing essential is communicated by it.
 
 Suggested feedback:
@@ -591,6 +625,19 @@ Larger teams have more people to coordinate; the normalization equalizes power, 
   | Pond star | 1,000 | Rare, at most 1 in the water | Arena-wide flash, shockwave rings, double burst, **TEAM N JACKPOT!** and `+1000`, fanfare |
 
   The kind of each new item is drawn from the round's seeded generator. All kinds share one collision radius, so the rare ones are not easier to hit. Reduced-motion settings drop the flash, rings, spin, and smoke.
+- **Catch-up placement** (confirmed requirement, revision 0.6; the distances are engineering defaults): when an item is placed, the more it is worth, the closer to the lowest-scoring team it appears.
+
+  | Item | Where a new one appears |
+  | --- | --- |
+  | Glow seed (100) | Anywhere in the pond |
+  | Golden bug (300) | 230–420 arena units from the lowest-scoring creature |
+  | Pond star (1,000) | 110–230 arena units from the lowest-scoring creature |
+
+  - "Lowest-scoring" is by current score among the creatures in the water. When every team has the same score, as at the start of a round, nobody is behind and every item goes anywhere. Teams tied for last share the help: one of them is chosen per item by the round's seeded generator.
+  - A steered item is also placed nearer to that team than to any other team whenever the pond allows it, and, like every item, never on top of a creature or another item and never outside the pond. If no such spot is free it falls back to anywhere.
+  - A creature covers at most about 42 arena units a second, so a star lands roughly three to six seconds' swim from the trailing team. It is help, not a gift: the team still has to steer to it, and a nearby rival can still take it.
+  - The rule applies in Game 2 Prep as well, and placement stays server-side and seeded.
+  - This is a deliberate fairness trade (the owner's choice): the leading team sees fewer valuable items near it. The distances are untuned and have not been tried with a class.
 - **Live scoreboard** (confirmed requirement, revision 0.4): during Game 2 and its prep the display carries a column of large score tiles beside the water, ordered by score, with the leader highlighted, each score bumping when it changes and the points just gained popping beside it. Point values are deliberately large round numbers.
 
 Collection rules:
@@ -645,7 +692,7 @@ Require independently renderable layers/components:
 5. Water shadow.
 6. Wake/splash particles.
 7. Recognition highlight.
-8. Limb label layer, readable regardless of body rotation. Each label shows the player's nickname (limb number for a limb nobody holds). Long names are shortened with an ellipsis to a width that scales with the creature, labels sit outside the paddle tips, neighbouring labels are pushed apart instead of overlapping, and in the straight race each team's labels stay inside its own lane.
+8. Limb label layer, readable regardless of body rotation. Each label shows the player's emoji and nickname (limb number for a limb nobody holds). Long names are shortened with an ellipsis to a width that scales with the creature, labels sit outside the paddle tips, neighbouring labels are pushed apart instead of overlapping, and in the straight race each team's labels stay inside its own lane.
 
 One baked image of a creature is insufficient if its limbs cannot animate independently.
 
@@ -853,7 +900,9 @@ Proposed prototype gate, to be reviewed after testing: at least 9 of 10 delibera
 | Scored game started, or reset, after its time was used up | Does not end at once; restarting the clock arms the automatic end again |
 | Scored game paused across zero | Stays paused; ends on resume |
 | Phase loaded | Section clock restarts from that section's planned time; the leaderboard has no clock |
-| Lobby before anyone joins | Joining clock waits at its full time; first join or **Start Clock** starts it |
+| Lobby before anyone joins | Joining clock waits at its full time; revealing guide step 2, the first join, or **Start Clock** starts it |
+| Explanation loaded | Guide at step 1; in the lobby the joining clock restarts from its full time and keeps running through every reveal; the show/hide toggle changes neither; over another phase that phase's clock is untouched |
+| Guide step command | Fresh session at step 1; steps 1–5 accepted in any order, anything else rejected; nothing advances by itself; hide/show keeps the step; a cleared session returns to step 1 |
 | Planned time edited or clock restarted during a live scored game | The end of the game moves with the clock; round ID, epoch, positions, and scores are untouched |
 | Game 1 Prep | No countdown, no admission lock, laps instead of a finish, nothing recorded for the leaderboard |
 | Discussion phase | Carries its topic; start, pause, end, and strokes are all rejected |
@@ -863,6 +912,12 @@ Proposed prototype gate, to be reviewed after testing: at least 9 of 10 delibera
 | Person rejoins as a new player after losing their page | Joins as a new limb; no ghost limb remains and team capacity counts only limbs on the creature |
 | Switch continuous/event modes | Same accepted-stroke power and scoring |
 | Two teams contact one item simultaneously | One item removal and one award |
+| New star or golden bug with one team behind | Star within its near ring of the lowest-scoring team, bug within its wider ring, both nearer to that team than to any other; seeds unsteered |
+| Scores level, or teams tied for last | Level: nothing is steered. Tied for last: the help is shared between them and the leader gets none |
+| Any placed item | Clear of every creature and item, inside the pond; same seed gives the same pond |
+| Music volume command | 0–100 accepted, anything else rejected; independent of the switch; kept across a session clear |
+| 30 players join | 30 different emoji from the pool; same emoji on the limb, the phone, and the roster |
+| Player reconnects, or loses and regains a limb | Emoji unchanged; a newcomer is not given an away player's emoji |
 | Race ended by time up or by the facilitator with creatures still out | Finishers ranked by time; unfinished teams clearly ranked by distance |
 | Scoped resets | Exactly the documented fields clear; membership/mappings survive where specified |
 | Unauthorized host command | Rejected by server |
